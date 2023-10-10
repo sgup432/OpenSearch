@@ -46,11 +46,13 @@ import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
+import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.common.unit.ByteSizeValue;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -125,6 +127,8 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
         ).setMaximumWeight(sizeInBytes).setExpireAfterAccess(expire).build();
 
         int diskTierWeight = 100 * 1048576; // 100 MB, for testing only
+
+        // changed to Integer for testing of bulk writes
         EhcacheDiskCachingTier<Key, BytesReference> diskCachingTier;
         diskCachingTier = new EhcacheDiskCachingTier<>(diskTierWeight, 0, Key.class, BytesReference.class);
         tieredCacheHandler = new TieredCacheSpilloverStrategyHandler.Builder<Key, BytesReference>().setOnHeapCachingTier(
@@ -273,7 +277,7 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
      *
      * @opensearch.internal
      */
-    static class Key implements Accountable {
+    static class Key implements Accountable, Serializable { // lies! it doesnt implement serializable in a functioning way, but for testing
         private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(Key.class);
 
         public final CacheEntity entity; // use as identity equality

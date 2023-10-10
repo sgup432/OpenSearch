@@ -45,6 +45,7 @@ import org.opensearch.core.xcontent.XContentBuilder;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 
@@ -54,7 +55,7 @@ import java.util.ArrayList;
  * @opensearch.api
  */
 @PublicApi(since = "1.0.0")
-public interface BytesReference extends Comparable<BytesReference>, ToXContentFragment {
+public interface BytesReference extends Comparable<BytesReference>, ToXContentFragment, Serializable { // another lie!
 
     /**
      * Convert an {@link XContentBuilder} into a BytesReference. This method closes the builder,
