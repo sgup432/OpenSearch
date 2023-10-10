@@ -26,10 +26,4 @@ grant {
      permission org.bouncycastle.crypto.CryptoServicesPermission "exportSecretKey";
      permission org.bouncycastle.crypto.CryptoServicesPermission "exportPrivateKey";
      permission java.io.FilePermission "${javax.net.ssl.trustStore}", "read";
-     //permission java.lang.RuntimePermission "createClassLoader"; // needed to create an ehcache disk tier cache
-};
-
-grant codeBase "${codebase.ehcache}" {
-  // needed to allow ehcache to create the classloader
-  permission java.security.AllPermission;
 };

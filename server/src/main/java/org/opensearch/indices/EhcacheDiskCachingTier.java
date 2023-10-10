@@ -28,7 +28,6 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V> {
     private Cache<K, V> cache;
     private final Class<K> keyType; // I think these are needed to pass to newCacheConfigurationBuilder
     private final Class<V> valueType;
-    //private final Path DISK_CACHE_FP = Paths.get("disk_cache_tier"); // ?
     private final String DISK_CACHE_FP = "disk_cache_tier";
     // private RBMIntKeyLookupStore keystore;
     // private CacheTierPolicy[] policies;
@@ -39,20 +38,11 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V> {
         this.keyType = keyType;
         this.valueType = valueType;
         String cacheAlias = "diskTier";
-        /*try {
-            Path file = Files.createFile(DISK_CACHE_FP);
-        } catch (Exception ignored) {}*/
         this.cacheManager = CacheManagerBuilder.newCacheManagerBuilder()
-            //.with(CacheManagerBuilder.persistence(new File(DISK_CACHE_FP)))
             .with(CacheManagerBuilder.persistence(DISK_CACHE_FP))
             .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
                 keyType, valueType, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(maxWeightInBytes, MemoryUnit.B, true)
             )).build(true);
-        /*this.cacheManager = CacheManagerBuilder.newCacheManagerBuilder()
-            .with(CacheManagerBuilder.persistence(new File(DISK_CACHE_FP)))
-            .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
-                IndicesRequestCache.Key.class, BytesReference.class, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(maxWeightInBytes, MemoryUnit.B, true)
-            )).build(true);*/
         this.cache = cacheManager.getCache(cacheAlias, keyType, valueType);
         // this.keystore = new RBMIntKeyLookupStore((int) Math.pow(2, 28), maxKeystoreWeightInBytes);
         // this.policies = new CacheTierPolicy[]{ new IndicesRequestCacheTookTimePolicy(settings, clusterSettings) };
