@@ -124,9 +124,12 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
             (k, v) -> k.ramBytesUsed() + v.ramBytesUsed()
         ).setMaximumWeight(sizeInBytes).setExpireAfterAccess(expire).build();
 
+        int diskTierWeight = 100 * 1048576; // 100 MB, for testing only
+        EhcacheDiskCachingTier<Key, BytesReference> diskCachingTier;
+        diskCachingTier = new EhcacheDiskCachingTier<>(diskTierWeight, 0, Key.class, BytesReference.class);
         tieredCacheHandler = new TieredCacheSpilloverStrategyHandler.Builder<Key, BytesReference>().setOnHeapCachingTier(
             openSearchOnHeapCache
-        ).setOnDiskCachingTier(new DummyDiskCachingTier<>()).setTieredCacheEventListener(this).build();
+        ).setOnDiskCachingTier(diskCachingTier).setTieredCacheEventListener(this).build();
     }
 
     @Override
