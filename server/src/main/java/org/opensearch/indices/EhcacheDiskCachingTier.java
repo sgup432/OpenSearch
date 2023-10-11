@@ -16,9 +16,11 @@ import org.ehcache.config.units.MemoryUnit;
 import org.ehcache.core.internal.statistics.DefaultStatisticsService;
 import org.ehcache.core.spi.service.StatisticsService;
 import org.ehcache.core.statistics.CacheStatistics;
+import org.ehcache.core.statistics.TierStatistics;
 import org.ehcache.event.CacheEvent;
 import org.ehcache.event.CacheEventListener;
 import org.ehcache.event.EventType;
+import org.opensearch.common.ExponentiallyWeightedMovingAverage;
 import org.opensearch.common.cache.RemovalListener;
 import org.ehcache.Cache;
 import org.ehcache.CacheManager;
@@ -26,18 +28,21 @@ import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.cache.RemovalReason;
 
 import java.util.Collections;
+import java.util.Map;
 
 public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalListener<K, V> {
 
     private CacheManager cacheManager;
-    private Cache<K, V> cache;
+    private final Cache<K, V> cache;
 
     private final Class<K> keyType; // I think these are needed to pass to newCacheConfigurationBuilder
     private final Class<V> valueType;
-    private final String DISK_CACHE_FP = "disk_cache_tier";
+    private final String DISK_CACHE_FP = "disk_cache_tier"; // this should probably be defined somewhere else since we need to change security.policy based on its value
     private RemovalListener<K, V> removalListener;
     private final StatisticsService statsService;
     private final CacheStatistics cacheStats;
+    private ExponentiallyWeightedMovingAverage getTimeMillisEWMA;
+    private static final double GET_TIME_EWMA_ALPHA  = 0.3; // This is the value used elsewhere in the code
     // private RBMIntKeyLookupStore keystore;
     // private CacheTierPolicy[] policies;
     // private IndicesRequestCacheDiskTierPolicy policy;
@@ -67,6 +72,9 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
             ).build(true);
         this.cache = cacheManager.getCache(cacheAlias, keyType, valueType);
         this.cacheStats = statsService.getCacheStatistics(cacheAlias);
+        this.getTimeMillisEWMA = new ExponentiallyWeightedMovingAverage(GET_TIME_EWMA_ALPHA, 10);
+
+        // try and feed it an OpenSearch threadpool rather than its default ExecutionService?
 
         // this.keystore = new RBMIntKeyLookupStore((int) Math.pow(2, 28), maxKeystoreWeightInBytes);
         // this.policies = new CacheTierPolicy[]{ new IndicesRequestCacheTookTimePolicy(settings, clusterSettings) };
@@ -78,7 +86,11 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         // do we need to do the future stuff? I don't think so?
 
         // if (keystore.contains(key.hashCode()) {
-        return cache.get(key); // do we want to somehow keep track of how long each cache.get takes?
+        long now = System.nanoTime();
+        V value = cache.get(key);
+        double tookTimeMillis = ((double) (System.nanoTime() - now)) / 1000000;
+        getTimeMillisEWMA.addValue(tookTimeMillis);
+        return value;
         // }
         // return null;
 
@@ -91,6 +103,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         // CheckDataResult policyResult = policy.checkData(value)
         // if (policyResult.isAccepted()) {
         cache.put(key, value);
+        // keystore.add(key.hashCode());
         // else { do something with policyResult.deniedReason()? }
         // }
     }
@@ -107,6 +120,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
 
         // if (keystore.contains(key.hashCode()) {
         cache.remove(key);
+        // keystore.remove(key.hashCode());
         // }
     }
 
@@ -135,7 +149,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     @Override
     public int count() {
         // this might be an expensive disk-seek call. Might be better to keep track ourselves?
-        return (int) cacheStats.getTierStatistics().get("Disk").getMappings();
+        return (int) getTierStats().getMappings();
     }
 
     @Override
@@ -148,9 +162,40 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         removalListener.onRemoval(notification);
     }
 
+    public double getTimeMillisEWMA() {
+        return getTimeMillisEWMA.getAverage();
+    }
+
+    private TierStatistics getTierStats() {
+        return cacheStats.getTierStatistics().get("Disk");
+    }
+
+    public long getHits() {
+        return getTierStats().getHits();
+    }
+
+    public long getMisses() {
+        return getTierStats().getMisses();
+    }
+
+    public long getWeightBytes() {
+        return getTierStats().getOccupiedByteSize();
+    }
+
+    public long getEvictions() {
+        return getTierStats().getEvictions();
+    }
+
+    public double getHitRatio() {
+        TierStatistics ts = getTierStats();
+        long hits = ts.getHits();
+        return hits / (hits + ts.getMisses());
+    }
+
     // See https://stackoverflow.com/questions/45827753/listenerobject-not-found-in-imports-for-ehcache-3 for API reference
-    // This class is used to get the old value from mutating calls to the cache and use those to create a RemovalNotification
-    private class EhcacheEventListener implements CacheEventListener<Object, Object> {
+    // it's not actually documented by ehcache :(
+    // This class is used to get the old value from mutating calls to the cache, and it uses those to create a RemovalNotification
+    private class EhcacheEventListener implements CacheEventListener<Object, Object> { // try making these specific, but i dont think itll work
         private RemovalListener<K, V> removalListener;
         EhcacheEventListener(RemovalListener<K, V> removalListener) {
             this.removalListener = removalListener;
@@ -168,10 +213,9 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
                     reason = RemovalReason.EVICTED; // why is there both RemovalReason.EVICTED and RemovalReason.CAPACITY?
                     break;
                 case EXPIRED:
-                    reason = RemovalReason.INVALIDATED; // not sure about this one
-                    break;
                 case REMOVED:
-                    reason = RemovalReason.INVALIDATED; // we use cache.remove() to invalidate keys, but this might overlap with RemovalReason.EXPLICIT?
+                    reason = RemovalReason.INVALIDATED;
+                    // this is probably fine for EXPIRED. We use cache.remove() to invalidate keys, but this might overlap with RemovalReason.EXPLICIT?
                     break;
                 case UPDATED:
                     reason = RemovalReason.REPLACED;
