@@ -11,6 +11,7 @@ package org.opensearch.indices;
 import org.ehcache.config.builders.CacheConfigurationBuilder;
 import org.ehcache.config.builders.CacheEventListenerConfigurationBuilder;
 import org.ehcache.config.builders.CacheManagerBuilder;
+import org.ehcache.config.builders.PooledExecutionServiceConfigurationBuilder;
 import org.ehcache.config.builders.ResourcePoolsBuilder;
 import org.ehcache.config.units.MemoryUnit;
 import org.ehcache.core.internal.statistics.DefaultStatisticsService;
@@ -20,6 +21,7 @@ import org.ehcache.core.statistics.TierStatistics;
 import org.ehcache.event.CacheEvent;
 import org.ehcache.event.CacheEventListener;
 import org.ehcache.event.EventType;
+import org.ehcache.impl.config.executor.PooledExecutionServiceConfiguration;
 import org.opensearch.common.ExponentiallyWeightedMovingAverage;
 import org.opensearch.common.cache.RemovalListener;
 import org.ehcache.Cache;
@@ -28,7 +30,6 @@ import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.cache.RemovalReason;
 
 import java.util.Collections;
-import java.util.Map;
 
 public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalListener<K, V> {
 
@@ -39,10 +40,11 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     private final Class<V> valueType;
     private final String DISK_CACHE_FP = "disk_cache_tier"; // this should probably be defined somewhere else since we need to change security.policy based on its value
     private RemovalListener<K, V> removalListener;
-    private final StatisticsService statsService;
     private final CacheStatistics cacheStats;
     private ExponentiallyWeightedMovingAverage getTimeMillisEWMA;
     private static final double GET_TIME_EWMA_ALPHA  = 0.3; // This is the value used elsewhere in the code
+    private static final int MIN_WRITE_THREADS = 0;
+    private static final int MAX_WRITE_THREADS = 4; // Max number of threads for the PooledExecutionService which handles writes
     // private RBMIntKeyLookupStore keystore;
     // private CacheTierPolicy[] policies;
     // private IndicesRequestCacheDiskTierPolicy policy;
@@ -52,7 +54,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         this.keyType = keyType;
         this.valueType = valueType;
         String cacheAlias = "diskTier";
-        this.statsService = new DefaultStatisticsService();
+        StatisticsService statsService = new DefaultStatisticsService();
 
         // our EhcacheEventListener should receive events every time an entry is removed for some reason, but not when it's created
         CacheEventListenerConfigurationBuilder listenerConfig = CacheEventListenerConfigurationBuilder
@@ -63,12 +65,18 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
                 EventType.UPDATED)
             .ordered().asynchronous(); // ordered() has some performance penalty as compared to unordered(), we can also use synchronous()
 
+        // test PooledExecutionService so we know what we might need to replicate
+        PooledExecutionServiceConfiguration threadConfig = PooledExecutionServiceConfigurationBuilder.newPooledExecutionServiceConfigurationBuilder()
+            .defaultPool("default", MIN_WRITE_THREADS, MAX_WRITE_THREADS)
+            .build();
+
         this.cacheManager = CacheManagerBuilder.newCacheManagerBuilder()
             .using(statsService)
+            .using(threadConfig)
             .with(CacheManagerBuilder.persistence(DISK_CACHE_FP))
             .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
                 keyType, valueType, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(maxWeightInBytes, MemoryUnit.B, true))
-                .withService(listenerConfig)
+                .withService(listenerConfig) // stackoverflow shows .add(), but IDE says this is deprecated. idk
             ).build(true);
         this.cache = cacheManager.getCache(cacheAlias, keyType, valueType);
         this.cacheStats = statsService.getCacheStatistics(cacheAlias);
