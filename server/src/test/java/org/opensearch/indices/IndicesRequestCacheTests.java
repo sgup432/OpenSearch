@@ -119,6 +119,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
 
         IOUtils.close(reader, writer, dir, cache);
         assertEquals(0, cache.numRegisteredCloseListeners());
+        cache.closeDiskTier();
     }
 
     public void testCacheDifferentReaders() throws Exception {
@@ -213,6 +214,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
 
         IOUtils.close(secondReader, writer, dir, cache);
         assertEquals(0, cache.numRegisteredCloseListeners());
+        cache.closeDiskTier();
     }
 
     public void testEviction() throws Exception {
@@ -242,6 +244,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
             assertEquals("bar", value2.streamInput().readString());
             size = requestCacheStats.stats().getMemorySize();
             IOUtils.close(reader, secondReader, writer, dir, cache);
+            cache.closeDiskTier();
         }
         IndicesRequestCache cache = new IndicesRequestCache(
             Settings.builder().put(IndicesRequestCache.INDICES_CACHE_QUERY_SIZE.getKey(), size.getBytes() + 1 + "b").build()
@@ -278,6 +281,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
         assertEquals(2, cache.count());
         assertEquals(1, requestCacheStats.stats().getEvictions());
         IOUtils.close(reader, secondReader, thirdReader, writer, dir, cache);
+        cache.closeDiskTier();
     }
 
     public void testClearAllEntityIdentity() throws Exception {
@@ -325,6 +329,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
         assertEquals("baz", value3.streamInput().readString());
 
         IOUtils.close(reader, secondReader, thirdReader, writer, dir, cache);
+        cache.closeDiskTier();
 
     }
 
@@ -430,6 +435,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
 
         IOUtils.close(reader, writer, dir, cache);
         assertEquals(0, cache.numRegisteredCloseListeners());
+        cache.closeDiskTier();
     }
 
     public void testEqualsKey() throws IOException {

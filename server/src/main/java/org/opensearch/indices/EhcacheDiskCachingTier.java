@@ -198,6 +198,13 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         return hits / (hits + ts.getMisses());
     }
 
+    public void close() {
+        // Call this method after each test, otherwise the directory will stay locked and you won't be able to
+        // initialize another IndicesRequestCache
+        cacheManager.close();
+    }
+
+
     // See https://stackoverflow.com/questions/45827753/listenerobject-not-found-in-imports-for-ehcache-3 for API reference
     // it's not actually documented by ehcache :(
     // This class is used to get the old value from mutating calls to the cache, and it uses those to create a RemovalNotification

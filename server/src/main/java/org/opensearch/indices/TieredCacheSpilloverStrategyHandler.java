@@ -25,7 +25,7 @@ import java.util.function.Function;
 public class TieredCacheSpilloverStrategyHandler<K, V> implements TieredCacheHandler<K, V>, RemovalListener<K, V> {
 
     private final OnHeapCachingTier<K, V> onHeapCachingTier;
-    private final CachingTier<K, V> diskCachingTier;
+    private final EhcacheDiskCachingTier<K, V> diskCachingTier; // changed for testing
     private final TieredCacheEventListener<K, V> tieredCacheEventListener;
 
     /**
@@ -35,7 +35,8 @@ public class TieredCacheSpilloverStrategyHandler<K, V> implements TieredCacheHan
 
     private TieredCacheSpilloverStrategyHandler(
         OnHeapCachingTier<K, V> onHeapCachingTier,
-        CachingTier<K, V> diskCachingTier,
+        EhcacheDiskCachingTier<K, V> diskCachingTier,
+        // changed to EhcacheDiskCachingTier from CachingTier, to enable close() method, which is needed for tests. Implement close() in CachingTier or DiskCachingTier or something?
         TieredCacheEventListener<K, V> tieredCacheEventListener
     ) {
         this.onHeapCachingTier = Objects.requireNonNull(onHeapCachingTier);
@@ -127,6 +128,10 @@ public class TieredCacheSpilloverStrategyHandler<K, V> implements TieredCacheHan
             return null;
         };
     }
+    @Override
+    public void closeDiskTier() {
+        diskCachingTier.close();
+    }
 
     public static class CacheValue<V> {
         V value;
@@ -163,7 +168,7 @@ public class TieredCacheSpilloverStrategyHandler<K, V> implements TieredCacheHan
         public TieredCacheSpilloverStrategyHandler<K, V> build() {
             return new TieredCacheSpilloverStrategyHandler<K, V>(
                 this.onHeapCachingTier,
-                this.diskCachingTier,
+                (EhcacheDiskCachingTier<K, V>) this.diskCachingTier, // not sure why it was yelling about this, it already is an EhcacheDiskCachingTier
                 this.tieredCacheEventListener
             );
         }

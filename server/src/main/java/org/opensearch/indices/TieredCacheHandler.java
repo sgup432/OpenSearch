@@ -21,4 +21,6 @@ public interface TieredCacheHandler<K, V> {
     long count();
 
     CachingTier<K, V> getOnHeapCachingTier();
+
+    void closeDiskTier();
 }

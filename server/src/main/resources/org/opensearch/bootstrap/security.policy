@@ -194,6 +194,8 @@ grant {
   permission java.lang.RuntimePermission "getenv.*";
   permission java.io.FilePermission "disk_cache_tier", "read"; // change this to wherever we will put disk tier folder
   permission java.io.FilePermission "disk_cache_tier", "write";
+  permission java.io.FilePermission "disk_cache_tier", "delete";
   permission java.io.FilePermission "disk_cache_tier/-", "read";
   permission java.io.FilePermission "disk_cache_tier/-", "write";
+  permission java.io.FilePermission "disk_cache_tier/-", "delete";
 };

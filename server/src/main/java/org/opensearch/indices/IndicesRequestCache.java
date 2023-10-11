@@ -399,4 +399,8 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
     int numRegisteredCloseListeners() { // for testing
         return registeredClosedListeners.size();
     }
+
+    public void closeDiskTier() {
+        tieredCacheHandler.closeDiskTier();
+    }
 }
