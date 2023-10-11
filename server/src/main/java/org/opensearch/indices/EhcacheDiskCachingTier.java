@@ -42,13 +42,12 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     private RemovalListener<K, V> removalListener;
     private final CacheStatistics cacheStats;
     private ExponentiallyWeightedMovingAverage getTimeMillisEWMA;
-    private static final double GET_TIME_EWMA_ALPHA  = 0.3; // This is the value used elsewhere in the code
+    private static final double GET_TIME_EWMA_ALPHA  = 0.3; // This is the value used elsewhere in OpenSearch
     private static final int MIN_WRITE_THREADS = 0;
     private static final int MAX_WRITE_THREADS = 4; // Max number of threads for the PooledExecutionService which handles writes
     // private RBMIntKeyLookupStore keystore;
     // private CacheTierPolicy[] policies;
     // private IndicesRequestCacheDiskTierPolicy policy;
-    //private RemovalListener<K, V> removalListener = notification -> {}; // based on on-heap
 
     public EhcacheDiskCachingTier(long maxWeightInBytes, long maxKeystoreWeightInBytes, Class<K> keyType, Class<V> valueType) {
         this.keyType = keyType;
@@ -56,7 +55,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         String cacheAlias = "diskTier";
         StatisticsService statsService = new DefaultStatisticsService();
 
-        // our EhcacheEventListener should receive events every time an entry is removed for some reason, but not when it's created
+        // our EhcacheEventListener should receive events every time an entry is removed, but not when it's created
         CacheEventListenerConfigurationBuilder listenerConfig = CacheEventListenerConfigurationBuilder
             .newEventListenerConfiguration(new EhcacheEventListener(this),
                 EventType.EVICTED,
@@ -65,7 +64,6 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
                 EventType.UPDATED)
             .ordered().asynchronous(); // ordered() has some performance penalty as compared to unordered(), we can also use synchronous()
 
-        // test PooledExecutionService so we know what we might need to replicate
         PooledExecutionServiceConfiguration threadConfig = PooledExecutionServiceConfigurationBuilder.newPooledExecutionServiceConfigurationBuilder()
             .defaultPool("default", MIN_WRITE_THREADS, MAX_WRITE_THREADS)
             .build();
