@@ -109,6 +109,10 @@ public class TieredCacheSpilloverStrategyHandler<K, V> implements TieredCacheHan
         return this.onHeapCachingTier;
     }
 
+    public EhcacheDiskCachingTier<K, V> getDiskCachingTier() { // change to CachingTier after debug
+        return this.diskCachingTier;
+    }
+
     private void setRemovalListeners() {
         for (CachingTier<K, V> cachingTier : cachingTierList) {
             cachingTier.setRemovalListener(this);

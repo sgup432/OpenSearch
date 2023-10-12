@@ -45,6 +45,7 @@ import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.BytesRef;
+import org.ehcache.core.statistics.TierStatistics;
 import org.opensearch.common.CheckedSupplier;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
@@ -119,6 +120,74 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
 
         IOUtils.close(reader, writer, dir, cache);
         assertEquals(0, cache.numRegisteredCloseListeners());
+        cache.closeDiskTier();
+    }
+
+    public void testAddDirectToEhcache() throws Exception {
+        ShardRequestCache requestCacheStats = new ShardRequestCache();
+        Settings.Builder settingsBuilder = Settings.builder();
+        long heapSizeBytes = 1000;
+        settingsBuilder.put("indices.requests.cache.size", new ByteSizeValue(heapSizeBytes));
+        IndicesRequestCache cache = new IndicesRequestCache(settingsBuilder.build());
+
+        // set up a key
+        Directory dir = newDirectory();
+        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+        writer.addDocument(newDoc(0, "foo"));
+        DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
+        AtomicBoolean indexShard = new AtomicBoolean(true);
+        TestEntity entity = new TestEntity(requestCacheStats, indexShard);
+        Loader loader = new Loader(reader, 0);
+        IndicesRequestCache.Key[] keys = new IndicesRequestCache.Key[9];
+        TermQueryBuilder termQuery = new TermQueryBuilder("id", "0");
+        BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+        IndicesRequestCache.Key key = new IndicesRequestCache.Key(entity, reader.getReaderCacheHelper().getKey(), termBytes);
+
+        TestBytesReference value = new TestBytesReference(124);
+        cache.tieredCacheHandler.getDiskCachingTier().cache.put(key, value);
+
+        IOUtils.close(reader, writer, dir, cache);
+        cache.closeDiskTier();
+    }
+
+    public void testSpillover() throws Exception {
+        // fill the on-heap cache until we spill over
+        ShardRequestCache requestCacheStats = new ShardRequestCache();
+        Settings.Builder settingsBuilder = Settings.builder();
+        long heapSizeBytes = 1000; // each of these queries is 115 bytes, so we can fit 8 in the heap cache
+        settingsBuilder.put("indices.requests.cache.size", new ByteSizeValue(heapSizeBytes));
+        IndicesRequestCache cache = new IndicesRequestCache(settingsBuilder.build());
+
+        Directory dir = newDirectory();
+        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+        writer.addDocument(newDoc(0, "foo"));
+        DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
+        AtomicBoolean indexShard = new AtomicBoolean(true);
+
+        TestEntity entity = new TestEntity(requestCacheStats, indexShard);
+        Loader loader = new Loader(reader, 0);
+        System.out.println("On-heap cache size at start = " + requestCacheStats.stats().getMemorySizeInBytes());
+        IndicesRequestCache.Key[] keys = new IndicesRequestCache.Key[9];
+        for (int i = 0; i < 9; i++) {
+            TermQueryBuilder termQuery = new TermQueryBuilder("id", String.valueOf(i));
+            BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+            keys[i] = new IndicesRequestCache.Key(entity, reader.getReaderCacheHelper().getKey(), termBytes);
+            BytesReference value = cache.getOrCompute(entity, loader, reader, termBytes);
+            System.out.println("On-heap cache size after " + (i+1) + " queries = " + requestCacheStats.stats().getMemorySizeInBytes());
+            System.out.println("Disk cache size after " + (i+1) + " queries = " + requestCacheStats.stats(TierType.DISK).getMemorySizeInBytes());
+        }
+        // attempt to get value from disk cache, the first key should have been evicted
+        BytesReference firstValue = cache.tieredCacheHandler.get(keys[0]);
+        System.out.println("Final on-heap cache size = " + requestCacheStats.stats().getMemorySizeInBytes()); // is correctly 920
+        //System.out.println("Final self-reported disk size = " + cache.tieredCacheHandler.getDiskWeightBytes()); // is 0, should be 115
+        System.out.println("On-heap tier evictions = " + requestCacheStats.stats().getEvictions()); // is correctly 1
+        System.out.println("Disk tier hits = " + requestCacheStats.stats(TierType.DISK).getHitCount()); // should be 1, is 0 bc keys not serializable
+        System.out.println("Disk tier misses = " + requestCacheStats.stats(TierType.DISK).getMissCount()); // should be 9, is 10 bc keys not serializable
+        //System.out.println("Disk tier self-reported misses = " + cache.tieredCacheHandler.getDiskCachingTier().getMisses()); // should be same as other one
+        System.out.println("On-heap tier hits = " + requestCacheStats.stats().getHitCount()); // is correctly 0
+        System.out.println("On-heap tier misses = " + requestCacheStats.stats().getMissCount()); // is correctly 10
+        System.out.println("Disk count = " + cache.tieredCacheHandler.getDiskCachingTier().count()); // should be 1, is 0
+        IOUtils.close(reader, writer, dir, cache);
         cache.closeDiskTier();
     }
 

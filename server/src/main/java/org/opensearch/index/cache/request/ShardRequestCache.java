@@ -56,11 +56,34 @@ public final class ShardRequestCache {
 
     public RequestCacheStats stats() {
         // TODO: Change RequestCacheStats to support disk tier stats.
+        return stats(TierType.ON_HEAP);
+    }
+
+    public RequestCacheStats stats(TierType tierType) {
         return new RequestCacheStats(
-            statsHolder.get(TierType.ON_HEAP).totalMetric.count(),
-            statsHolder.get(TierType.ON_HEAP).evictionsMetric.count(),
-            statsHolder.get(TierType.ON_HEAP).hitCount.count(),
-            statsHolder.get(TierType.ON_HEAP).missCount.count()
+            statsHolder.get(tierType).totalMetric.count(),
+            statsHolder.get(tierType).evictionsMetric.count(),
+            statsHolder.get(tierType).hitCount.count(),
+            statsHolder.get(tierType).missCount.count()
+        );
+    }
+
+    public RequestCacheStats overallStats() {
+        long totalSize = 0;
+        long totalEvictions = 0;
+        long totalHits = 0;
+        long totalMisses = 0;
+        for (TierType tierType : TierType.values()) {
+            totalSize += statsHolder.get(tierType).totalMetric.count();
+            totalEvictions += statsHolder.get(tierType).evictionsMetric.count();
+            totalHits += statsHolder.get(tierType).hitCount.count();
+            totalMisses += statsHolder.get(tierType).missCount.count();
+        }
+        return new RequestCacheStats(
+            totalSize,
+            totalEvictions,
+            totalHits,
+            totalMisses
         );
     }
 

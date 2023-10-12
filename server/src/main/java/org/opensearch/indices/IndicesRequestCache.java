@@ -107,8 +107,8 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
     private final TimeValue expire;
     // private final Cache<Key, BytesReference> cache;
 
-    private final TieredCacheHandler<Key, BytesReference> tieredCacheHandler;
-
+    //private final TieredCacheHandler<Key, BytesReference> tieredCacheHandler; // made public TieredCacheSpilloverStrategyHandler for testing
+    public final TieredCacheSpilloverStrategyHandler<Key, BytesReference> tieredCacheHandler;
     IndicesRequestCache(Settings settings) {
         this.size = INDICES_CACHE_QUERY_SIZE.get(settings);
         this.expire = INDICES_CACHE_QUERY_EXPIRE.exists(settings) ? INDICES_CACHE_QUERY_EXPIRE.get(settings) : null;
@@ -130,7 +130,7 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
 
         // changed to Integer for testing of bulk writes
         EhcacheDiskCachingTier<Key, BytesReference> diskCachingTier;
-        diskCachingTier = new EhcacheDiskCachingTier<>(diskTierWeight, 0, Key.class, BytesReference.class);
+        diskCachingTier = new EhcacheDiskCachingTier<>(true, diskTierWeight, 0, Key.class, BytesReference.class);
         tieredCacheHandler = new TieredCacheSpilloverStrategyHandler.Builder<Key, BytesReference>().setOnHeapCachingTier(
             openSearchOnHeapCache
         ).setOnDiskCachingTier(diskCachingTier).setTieredCacheEventListener(this).build();
