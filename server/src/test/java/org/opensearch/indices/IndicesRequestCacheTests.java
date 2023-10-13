@@ -78,7 +78,9 @@ import org.opensearch.test.OpenSearchTestCase;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class IndicesRequestCacheTests extends OpenSearchTestCase {
@@ -194,17 +196,58 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
             .defaultPool("default", 0, 4)
             .build();
 
-        PersistentCacheManager cacheManager = CacheManagerBuilder.newCacheManagerBuilder()
-            .using(statsService) // https://stackoverflow.com/questions/40453859/how-to-get-ehcache-3-1-statistics
-            .using(threadConfig)
-            .with(CacheManagerBuilder.persistence(EhcacheDiskCachingTier.DISK_CACHE_FP))
-            .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
-                    IndicesRequestCache.Key.class, String.class, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(10, MemoryUnit.MB, false))
-                .withService(listenerConfig) // stackoverflow shows .add(), but IDE says this is deprecated. idk
-            ).build(true);
-        Cache<IndicesRequestCache.Key, String> cache = cacheManager.getCache(cacheAlias, IndicesRequestCache.Key.class, String.class);
+        PersistentCacheManager cacheManager;
 
-        Directory dir = newDirectory();
+        boolean doIntCache = false;
+
+        if (doIntCache) {
+            cacheManager = CacheManagerBuilder.newCacheManagerBuilder()
+                .using(statsService) // https://stackoverflow.com/questions/40453859/how-to-get-ehcache-3-1-statistics
+                .using(threadConfig)
+                .with(CacheManagerBuilder.persistence(EhcacheDiskCachingTier.DISK_CACHE_FP))
+                .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
+                        Integer.class, String.class, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(10, MemoryUnit.MB, false))
+                    .withService(listenerConfig)
+                ).build(true);
+            Cache<Integer, String> integerCache = cacheManager.getCache(cacheAlias, Integer.class, String.class);
+
+            integerCache.put(0, "blorp");
+            System.out.println("Counter value = " + count.count());
+            String res = integerCache.get(0);
+            System.out.println("Got result " + res);
+            System.out.println("Counter value = " + count.count());
+        } else {
+            cacheManager = CacheManagerBuilder.newCacheManagerBuilder()
+                .using(statsService) // https://stackoverflow.com/questions/40453859/how-to-get-ehcache-3-1-statistics
+                .using(threadConfig)
+                .with(CacheManagerBuilder.persistence(EhcacheDiskCachingTier.DISK_CACHE_FP))
+                .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
+                        DummySerializableKey.class, String.class, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(10, MemoryUnit.MB, false))
+                    .withService(listenerConfig)
+                ).build(true);
+            Cache<DummySerializableKey, String> cache = cacheManager.getCache(cacheAlias, DummySerializableKey.class, String.class);
+
+            DummySerializableKey key = new DummySerializableKey(Integer.valueOf(0), "blah");
+            cache.put(key, "blorp");
+            System.out.println("Counter value = " + count.count());
+            String res = cache.get(key);
+            System.out.println("Got result " + res);
+            System.out.println("Counter value = " + count.count());
+            TierStatistics ts = statsService.getCacheStatistics(cacheAlias).getTierStatistics().get("Disk");
+            System.out.println("self-reported count = " + ts.getMappings());
+            System.out.println("self-reported misses = " + ts.getMisses());
+            System.out.println("self-reported hits = " + ts.getHits());
+
+            List<Cache.Entry<DummySerializableKey, String>> foos = new ArrayList<>();
+            for(Cache.Entry<DummySerializableKey, String> entry : cache) {
+                foos.add(entry);
+            }
+            int j = 0;
+            j++;
+            System.out.println(j);
+        }
+
+        /*Directory dir = newDirectory();
         IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
         writer.addDocument(newDoc(0, "foo"));
         DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
@@ -216,19 +259,12 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
         IndicesRequestCache.Key[] keys = new IndicesRequestCache.Key[9];
         TermQueryBuilder termQuery = new TermQueryBuilder("id", "0");
         BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
-        IndicesRequestCache.Key key = new IndicesRequestCache.Key(entity, reader.getReaderCacheHelper().getKey(), termBytes);
+        IndicesRequestCache.Key key = new IndicesRequestCache.Key(entity, reader.getReaderCacheHelper().getKey(), termBytes);*/
 
-        cache.put(key, "blorp");
-        System.out.println("Counter value = " + count.count());
-        String res = cache.get(key);
-        System.out.println("Got result " + res);
-
-        System.out.println("Counter value = " + count.count());
-        //System.out.println("Hits = " + statsService.getCacheStatistics(cacheAlias).getTierStatistics().get("Disk").getHits());
 
         cacheManager.removeCache(cacheAlias);
         cacheManager.close();
-        IOUtils.close(reader, writer, dir);
+        //IOUtils.close(reader, writer, dir);
     }
 
     public void testSpillover() throws Exception {

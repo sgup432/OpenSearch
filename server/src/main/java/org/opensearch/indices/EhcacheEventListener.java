@@ -41,7 +41,7 @@ public class EhcacheEventListener<K, V> implements CacheEventListener<K, V> { //
         } else if (oldValue != null && newValue == null) {
             counter.dec();
         } else {
-            int j;
+            int j; // breakpoint
         }
 
         // handle creating a RemovalReason, unless eventType is CREATED

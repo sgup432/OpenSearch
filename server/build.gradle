@@ -159,7 +159,7 @@ dependencies {
   api "jakarta.annotation:jakarta.annotation-api:${versions.jakarta_annotation}"
 
   // ehcache
-  api "org.ehcache:ehcache:3.10.8"
+  api "org.ehcache:ehcache:3.10.8" // using 3.3.1 rather than 3.10.8 to test if dependency conflicts are causing my issues
   api "org.slf4j:slf4j-api:1.7.36"
 
   testImplementation(project(":test:framework")) {
