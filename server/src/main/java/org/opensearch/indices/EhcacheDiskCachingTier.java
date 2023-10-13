@@ -27,6 +27,7 @@ import org.opensearch.common.cache.RemovalListener;
 import org.ehcache.Cache;
 import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.cache.RemovalReason;
+import org.opensearch.common.metrics.CounterMetric;
 
 import java.util.Collections;
 
@@ -37,7 +38,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
 
     private final Class<K> keyType; // I think these are needed to pass to newCacheConfigurationBuilder
     private final Class<V> valueType;
-    private final String DISK_CACHE_FP = "disk_cache_tier"; // this should probably be defined somewhere else since we need to change security.policy based on its value
+    public final static String DISK_CACHE_FP = "disk_cache_tier"; // this should probably be defined somewhere else since we need to change security.policy based on its value
     private RemovalListener<K, V> removalListener;
     private StatisticsService statsService; // non functional
     private ExponentiallyWeightedMovingAverage getTimeMillisEWMA;
@@ -46,7 +47,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     private static final int MAX_WRITE_THREADS = 4; // Max number of threads for the PooledExecutionService which handles writes
     private static final String cacheAlias = "diskTier";
     private final boolean isPersistent;
-    private int count; // number of entries in cache
+    private CounterMetric count; // number of entries in cache
     // private RBMIntKeyLookupStore keystore;
     // private CacheTierPolicy[] policies;
     // private IndicesRequestCacheDiskTierPolicy policy;
@@ -55,12 +56,12 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         this.keyType = keyType;
         this.valueType = valueType;
         this.isPersistent = isPersistent;
-        this.count = 0;
+        this.count = new CounterMetric();
         statsService = new DefaultStatisticsService();
 
         // our EhcacheEventListener should receive events every time an entry is changed
         CacheEventListenerConfigurationBuilder listenerConfig = CacheEventListenerConfigurationBuilder
-            .newEventListenerConfiguration(new EhcacheEventListener(this, this),
+            .newEventListenerConfiguration(new EhcacheEventListener<K, V>(this, this.count),
                 EventType.EVICTED,
                 EventType.EXPIRED,
                 EventType.REMOVED,
@@ -157,15 +158,15 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
 
     @Override
     public int count() {
-        return count;
+        return (int) count.count();
         //return (int) getTierStats().getMappings();
     }
 
     protected void countInc() {
-        count++;
+        count.inc();
     }
     protected void countDec() {
-        count--;
+        count.dec();
     }
 
     @Override
@@ -228,49 +229,5 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     // This class is used to get the old value from mutating calls to the cache, and it uses those to create a RemovalNotification
     // It also handles incrementing and decrementing the count for the disk tier, since ehcache's statistics functionality
     // does not seem to work
-    private class EhcacheEventListener implements CacheEventListener<K, V> { // try making these specific, but i dont think itll work
-        private RemovalListener<K, V> removalListener;
-        private EhcacheDiskCachingTier<K, V> tier;
-        EhcacheEventListener(RemovalListener<K, V> removalListener, EhcacheDiskCachingTier<K, V> tier) {
-            this.removalListener = removalListener;
-            this.tier = tier; // needed to handle count changes
-        }
-        @Override
-        public void onEvent(CacheEvent<? extends K, ? extends V> event) {
-            K key = event.getKey();
-            V oldValue = event.getOldValue();
-            V newValue = event.getNewValue();
-            EventType eventType = event.getType();
 
-            System.out.println("I am eventing!!");
-
-            // handle changing count for the disk tier
-            if (oldValue == null && newValue != null) {
-                tier.countInc();
-            } else if (oldValue != null && newValue == null) {
-                tier.countDec();
-            }
-
-            // handle creating a RemovalReason, unless eventType is CREATED
-            RemovalReason reason;
-            switch (eventType) {
-                case CREATED:
-                    return;
-                case EVICTED:
-                    reason = RemovalReason.EVICTED; // why is there both RemovalReason.EVICTED and RemovalReason.CAPACITY?
-                    break;
-                case EXPIRED:
-                case REMOVED:
-                    reason = RemovalReason.INVALIDATED;
-                    // this is probably fine for EXPIRED. We use cache.remove() to invalidate keys, but this might overlap with RemovalReason.EXPLICIT?
-                    break;
-                case UPDATED:
-                    reason = RemovalReason.REPLACED;
-                    break;
-                default:
-                    reason = null;
-            }
-            removalListener.onRemoval(new RemovalNotification<K, V>(key, oldValue, reason));
-        }
-    }
 }

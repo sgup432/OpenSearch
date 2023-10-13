@@ -45,10 +45,25 @@ import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.BytesRef;
+import org.ehcache.Cache;
+import org.ehcache.PersistentCacheManager;
+import org.ehcache.config.builders.CacheConfigurationBuilder;
+import org.ehcache.config.builders.CacheEventListenerConfigurationBuilder;
+import org.ehcache.config.builders.CacheManagerBuilder;
+import org.ehcache.config.builders.PooledExecutionServiceConfigurationBuilder;
+import org.ehcache.config.builders.ResourcePoolsBuilder;
+import org.ehcache.config.units.MemoryUnit;
+import org.ehcache.core.internal.statistics.DefaultStatisticsService;
+import org.ehcache.core.spi.service.StatisticsService;
 import org.ehcache.core.statistics.TierStatistics;
+import org.ehcache.event.EventType;
+import org.ehcache.impl.config.executor.PooledExecutionServiceConfiguration;
 import org.opensearch.common.CheckedSupplier;
+import org.opensearch.common.cache.RemovalListener;
+import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
+import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.core.common.bytes.AbstractBytesReference;
@@ -62,6 +77,7 @@ import org.opensearch.index.query.TermQueryBuilder;
 import org.opensearch.test.OpenSearchTestCase;
 
 import java.io.IOException;
+import java.io.Serializable;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -148,6 +164,71 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
 
         IOUtils.close(reader, writer, dir, cache);
         cache.closeDiskTier();
+    }
+
+    public void testSimpleEhcache() throws Exception {
+        // for debug only, delete
+         CounterMetric count = new CounterMetric();
+         String cacheAlias = "dummy";
+
+        class DummyRemovalListener implements RemovalListener<Integer, String> {
+            public DummyRemovalListener() { }
+            @Override
+            public void onRemoval(RemovalNotification<Integer, String> notification) {
+                System.out.println(":)");
+            }
+        }
+
+        CacheEventListenerConfigurationBuilder listenerConfig = CacheEventListenerConfigurationBuilder
+            .newEventListenerConfiguration(new EhcacheEventListener<Integer, String>(new DummyRemovalListener(), count),
+                EventType.EVICTED,
+                EventType.EXPIRED,
+                EventType.REMOVED,
+                EventType.UPDATED,
+                EventType.CREATED)
+        .ordered().asynchronous(); // ordered() has some performance penalty as compared to unordered(), we can also use synchronous()
+
+        StatisticsService statsService = new DefaultStatisticsService();
+
+        PooledExecutionServiceConfiguration threadConfig = PooledExecutionServiceConfigurationBuilder.newPooledExecutionServiceConfigurationBuilder()
+            .defaultPool("default", 0, 4)
+            .build();
+
+        PersistentCacheManager cacheManager = CacheManagerBuilder.newCacheManagerBuilder()
+            .using(statsService) // https://stackoverflow.com/questions/40453859/how-to-get-ehcache-3-1-statistics
+            .using(threadConfig)
+            .with(CacheManagerBuilder.persistence(EhcacheDiskCachingTier.DISK_CACHE_FP))
+            .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
+                    IndicesRequestCache.Key.class, String.class, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(10, MemoryUnit.MB, false))
+                .withService(listenerConfig) // stackoverflow shows .add(), but IDE says this is deprecated. idk
+            ).build(true);
+        Cache<IndicesRequestCache.Key, String> cache = cacheManager.getCache(cacheAlias, IndicesRequestCache.Key.class, String.class);
+
+        Directory dir = newDirectory();
+        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+        writer.addDocument(newDoc(0, "foo"));
+        DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
+        AtomicBoolean indexShard = new AtomicBoolean(true);
+        ShardRequestCache requestCacheStats = new ShardRequestCache();
+        TestEntity entity = new TestEntity(requestCacheStats, indexShard);
+        Loader loader = new Loader(reader, 0);
+        System.out.println("On-heap cache size at start = " + requestCacheStats.stats().getMemorySizeInBytes());
+        IndicesRequestCache.Key[] keys = new IndicesRequestCache.Key[9];
+        TermQueryBuilder termQuery = new TermQueryBuilder("id", "0");
+        BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+        IndicesRequestCache.Key key = new IndicesRequestCache.Key(entity, reader.getReaderCacheHelper().getKey(), termBytes);
+
+        cache.put(key, "blorp");
+        System.out.println("Counter value = " + count.count());
+        String res = cache.get(key);
+        System.out.println("Got result " + res);
+
+        System.out.println("Counter value = " + count.count());
+        //System.out.println("Hits = " + statsService.getCacheStatistics(cacheAlias).getTierStatistics().get("Disk").getHits());
+
+        cacheManager.removeCache(cacheAlias);
+        cacheManager.close();
+        IOUtils.close(reader, writer, dir);
     }
 
     public void testSpillover() throws Exception {
@@ -534,7 +615,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
         assertNotEquals(key1, key5);
     }
 
-    private class TestBytesReference extends AbstractBytesReference {
+    private class TestBytesReference extends AbstractBytesReference implements Serializable {
 
         int dummyValue;
 
