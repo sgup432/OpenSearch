@@ -11,6 +11,7 @@ package org.opensearch.indices;
 import org.opensearch.common.cache.RemovalListener;
 import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.cache.RemovalReason;
+import org.opensearch.core.common.io.stream.Writeable;
 
 import java.util.Arrays;
 import java.util.List;
@@ -22,10 +23,10 @@ import java.util.function.Function;
  * @param <K>
  * @param <V>
  */
-public class TieredCacheSpilloverStrategyHandler<K, V> implements TieredCacheHandler<K, V>, RemovalListener<K, V> {
+public class TieredCacheSpilloverStrategyHandler<K extends Writeable, V> implements TieredCacheHandler<K, V>, RemovalListener<K, V> {
 
     private final OnHeapCachingTier<K, V> onHeapCachingTier;
-    private final EhcacheDiskCachingTier<K, V> diskCachingTier; // changed for testing
+    private final DiskCachingTier<K, V> diskCachingTier; // changed for testing
     private final TieredCacheEventListener<K, V> tieredCacheEventListener;
 
     /**
@@ -109,7 +110,7 @@ public class TieredCacheSpilloverStrategyHandler<K, V> implements TieredCacheHan
         return this.onHeapCachingTier;
     }
 
-    public EhcacheDiskCachingTier<K, V> getDiskCachingTier() { // change to CachingTier after debug
+    public DiskCachingTier<K, V> getDiskCachingTier() { // change to CachingTier after debug
         return this.diskCachingTier;
     }
 
@@ -147,7 +148,7 @@ public class TieredCacheSpilloverStrategyHandler<K, V> implements TieredCacheHan
         }
     }
 
-    public static class Builder<K, V> {
+    public static class Builder<K extends Writeable, V> {
         private OnHeapCachingTier<K, V> onHeapCachingTier;
         private CachingTier<K, V> diskCachingTier;
         private TieredCacheEventListener<K, V> tieredCacheEventListener;

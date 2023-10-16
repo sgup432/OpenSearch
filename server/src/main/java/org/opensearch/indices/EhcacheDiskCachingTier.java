@@ -27,16 +27,24 @@ import org.opensearch.common.cache.RemovalListener;
 import org.ehcache.Cache;
 import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.cache.RemovalReason;
+import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.metrics.CounterMetric;
+import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.common.io.stream.BytesStreamInput;
+import org.opensearch.core.common.io.stream.StreamOutput;
+import org.opensearch.core.common.io.stream.Writeable;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.Collections;
 
-public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalListener<K, V> {
+public class EhcacheDiskCachingTier<K extends Writeable, V> implements DiskCachingTier<K, V>, RemovalListener<K, V> {
 
     private final PersistentCacheManager cacheManager;
-    private final Cache<K, V> cache; // make private after debug
-
-    private final Class<K> keyType; // I think these are needed to pass to newCacheConfigurationBuilder
+    private final Cache<EhcacheKey, V> cache;
+    private final Class<K> keyType; // These are needed to pass to newCacheConfigurationBuilder
+    //private final Class<EhcacheKey<K>> ehcacheKeyType;
     private final Class<V> valueType;
     public final static String DISK_CACHE_FP = "disk_cache_tier"; // this should probably be defined somewhere else since we need to change security.policy based on its value
     private RemovalListener<K, V> removalListener;
@@ -48,17 +56,25 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     private static final String cacheAlias = "diskTier";
     private final boolean isPersistent;
     private CounterMetric count; // number of entries in cache
-    private EhcacheEventListener listener;
+    private final EhcacheEventListener<K, V> listener;
     // private RBMIntKeyLookupStore keystore;
     // private CacheTierPolicy[] policies;
     // private IndicesRequestCacheDiskTierPolicy policy;
 
-    public EhcacheDiskCachingTier(boolean isPersistent, long maxWeightInBytes, long maxKeystoreWeightInBytes, Class<K> keyType, Class<V> valueType) {
-        this.keyType = keyType;
-        this.valueType = valueType;
+    public EhcacheDiskCachingTier(
+        boolean isPersistent,
+        long maxWeightInBytes,
+        long maxKeystoreWeightInBytes,
+        Class<K> keyType,
+        //Class<EhcacheKey<K>> ehcacheKeyType,
+        Class<V> valueType
+    ) {
         this.isPersistent = isPersistent;
+        this.keyType = keyType;
+        //this.ehcacheKeyType = ehcacheKeyType;
+        this.valueType = valueType;
         this.count = new CounterMetric();
-        this.listener = new EhcacheEventListener<K, V>(this, this.count);
+        this.listener = new EhcacheEventListener<K, V>(this, this);
         statsService = new DefaultStatisticsService();
 
         // our EhcacheEventListener should receive events every time an entry is changed
@@ -80,10 +96,10 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
             .using(threadConfig)
             .with(CacheManagerBuilder.persistence(DISK_CACHE_FP))
             .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
-                keyType, valueType, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(maxWeightInBytes, MemoryUnit.B, isPersistent))
+                EhcacheKey.class, valueType, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(maxWeightInBytes, MemoryUnit.B, isPersistent))
                 .withService(listenerConfig)
             ).build(true);
-        this.cache = cacheManager.getCache(cacheAlias, keyType, valueType);
+        this.cache = cacheManager.getCache(cacheAlias, EhcacheKey.class, valueType);
         this.getTimeMillisEWMA = new ExponentiallyWeightedMovingAverage(GET_TIME_EWMA_ALPHA, 10);
 
         // this.keystore = new RBMIntKeyLookupStore((int) Math.pow(2, 28), maxKeystoreWeightInBytes);
@@ -92,12 +108,12 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     }
 
     @Override
-    public V get(K key) {
+    public V get(K key) throws IOException {
         // I don't think we need to do the future stuff as the cache is threadsafe
 
         // if (keystore.contains(key.hashCode()) {
         long now = System.nanoTime();
-        V value = cache.get(key);
+        V value = cache.get(new EhcacheKey(key));
         double tookTimeMillis = ((double) (System.nanoTime() - now)) / 1000000;
         getTimeMillisEWMA.addValue(tookTimeMillis);
         return value;
@@ -106,12 +122,12 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     }
 
     @Override
-    public void put(K key, V value) {
+    public void put(K key, V value) throws IOException {
         // No need to get old value, this is handled by EhcacheEventListener.
 
         // CheckDataResult policyResult = policy.checkData(value)
         // if (policyResult.isAccepted()) {
-        cache.put(key, value);
+        cache.put(new EhcacheKey(key), value);
         // keystore.add(key.hashCode());
         // else { do something with policyResult.deniedReason()? }
         // }
@@ -123,12 +139,12 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     }
 
     @Override
-    public void invalidate(K key) {
+    public void invalidate(K key) throws IOException {
         // keep keystore check to avoid unneeded disk seek
         // RemovalNotification is handled by EhcacheEventListener
 
         // if (keystore.contains(key.hashCode()) {
-        cache.remove(key);
+        cache.remove(new EhcacheKey(key));
         // keystore.remove(key.hashCode());
         // }
     }
@@ -185,6 +201,15 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         return isPersistent;
     }
 
+    public K convertEhcacheKeyToOriginal(EhcacheKey eKey) throws IOException {
+        BytesStreamInput is = new BytesStreamInput();
+        byte[] bytes = eKey.getBytes();
+        is.readBytes(bytes, 0, bytes.length);
+        // we somehow have to use the Reader thing in the Writeable interface
+        // otherwise its not generic
+    }
+
+    @Override
     public void close() {
         // Call this method after each test, otherwise the directory will stay locked and you won't be able to
         // initialize another IndicesRequestCache (for example in the next test that runs)

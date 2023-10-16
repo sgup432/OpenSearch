@@ -55,7 +55,7 @@ import java.util.ArrayList;
  * @opensearch.api
  */
 @PublicApi(since = "1.0.0")
-public interface BytesReference extends Comparable<BytesReference>, ToXContentFragment, Serializable { // another lie!
+public interface BytesReference extends Comparable<BytesReference>, ToXContentFragment {
 
     /**
      * Convert an {@link XContentBuilder} into a BytesReference. This method closes the builder,

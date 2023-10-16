@@ -9,5 +9,8 @@
 package org.opensearch.indices;
 
 public interface DiskCachingTier<K, V> extends CachingTier<K, V> {
-
+    /**
+     * Closes the disk tier.
+     */
+    void close();
 }

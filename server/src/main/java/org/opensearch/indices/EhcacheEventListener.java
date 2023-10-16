@@ -15,33 +15,34 @@ import org.opensearch.common.cache.RemovalListener;
 import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.cache.RemovalReason;
 import org.opensearch.common.metrics.CounterMetric;
+import org.opensearch.core.common.io.stream.BytesStreamInput;
+import org.opensearch.core.common.io.stream.StreamInput;
+import org.opensearch.core.common.io.stream.Writeable;
 import org.opensearch.indices.EhcacheDiskCachingTier;
 
 // moved to another file for testing flexibility purposes
 
-public class EhcacheEventListener<K, V> implements CacheEventListener<K, V> { // make it private after debugging
+public class EhcacheEventListener<K extends Writeable, V> implements CacheEventListener<EhcacheKey, V> {
+    // Receives key-value pairs (BytesReference, BytesReference), but must transform into (Key, BytesReference)
+    // to send removal notifications
     private RemovalListener<K, V> removalListener;
-    private CounterMetric counter;
-    EhcacheEventListener(RemovalListener<K, V> removalListener, CounterMetric counter) {
+    private EhcacheDiskCachingTier tier;
+    EhcacheEventListener(RemovalListener<K, V> removalListener, EhcacheDiskCachingTier tier) {
         this.removalListener = removalListener;
-        this.counter = counter; // needed to handle count changes
+        this.tier = tier; // needed to handle count changes
     }
     @Override
-    public void onEvent(CacheEvent<? extends K, ? extends V> event) {
-        K key = event.getKey();
+    public void onEvent(CacheEvent<? extends EhcacheKey, ? extends V> event) {
+        EhcacheKey ehcacheKey = event.getKey();
         V oldValue = event.getOldValue();
         V newValue = event.getNewValue();
         EventType eventType = event.getType();
 
-        System.out.println("I am eventing!!");
-
         // handle changing count for the disk tier
         if (oldValue == null && newValue != null) {
-            counter.inc();
+            tier.countInc();
         } else if (oldValue != null && newValue == null) {
-            counter.dec();
-        } else {
-            int j; // breakpoint
+            tier.countDec();
         }
 
         // handle creating a RemovalReason, unless eventType is CREATED
@@ -63,6 +64,10 @@ public class EhcacheEventListener<K, V> implements CacheEventListener<K, V> { //
             default:
                 reason = null;
         }
-        removalListener.onRemoval(new RemovalNotification<K, V>(key, oldValue, reason));
+        try {
+            K key = tier.convertEhcacheKeyToOriginal(ehcacheKey);
+            removalListener.onRemoval(new RemovalNotification<K, V>(key, oldValue, reason));
+        } catch (Exception ignored) {}
+
     }
 }

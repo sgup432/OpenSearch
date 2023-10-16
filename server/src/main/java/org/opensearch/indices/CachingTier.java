@@ -10,6 +10,8 @@ package org.opensearch.indices;
 
 import org.opensearch.common.cache.RemovalListener;
 
+import java.io.IOException;
+
 /**
  * asdsadssa
  * @param <K>
@@ -17,13 +19,13 @@ import org.opensearch.common.cache.RemovalListener;
  */
 public interface CachingTier<K, V> {
 
-    V get(K key);
+    V get(K key) throws IOException;
 
-    void put(K key, V value);
+    void put(K key, V value) throws IOException;
 
     V computeIfAbsent(K key, TieredCacheLoader<K, V> loader) throws Exception;
 
-    void invalidate(K key);
+    void invalidate(K key) throws IOException;
 
     V compute(K key, TieredCacheLoader<K, V> loader) throws Exception;
 
