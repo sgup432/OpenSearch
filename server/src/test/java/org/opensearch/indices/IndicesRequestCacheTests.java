@@ -67,6 +67,7 @@ import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.core.common.bytes.AbstractBytesReference;
+import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.core.index.shard.ShardId;
@@ -164,7 +165,8 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
         BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
         IndicesRequestCache.Key key = new IndicesRequestCache.Key(entity, reader.getReaderCacheHelper().getKey(), termBytes);
 
-        TestBytesReference value = new TestBytesReference(124);
+        //TestBytesReference value = new TestBytesReference(124);
+        BytesReference value = new BytesArray(new byte[]{0});
         cache.tieredCacheHandler.getDiskCachingTier().put(key, value);
 
         System.out.println("Size: " + cache.tieredCacheHandler.getDiskCachingTier().count());
@@ -707,7 +709,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
         }
     }
 
-    private class TestEntity extends AbstractIndexShardCacheEntity {
+    private class TestEntity extends AbstractIndexShardCacheEntity implements Serializable {
         private final AtomicBoolean standInForIndexShard;
         private final ShardRequestCache shardRequestCache;
 

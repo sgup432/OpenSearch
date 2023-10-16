@@ -32,6 +32,7 @@
 
 package org.opensearch.common.metrics;
 
+import java.io.Serializable;
 import java.util.concurrent.atomic.LongAdder;
 
 /**

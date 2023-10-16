@@ -37,6 +37,7 @@ import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.indices.TierType;
 
+import java.io.Serializable;
 import java.util.EnumMap;
 
 /**
@@ -113,7 +114,7 @@ public final class ShardRequestCache {
         statsHolder.get(tierType).totalMetric.dec(dec);
     }
 
-    static class StatsHolder {
+    static class StatsHolder implements Serializable {
 
         final CounterMetric evictionsMetric = new CounterMetric();
         final CounterMetric totalMetric = new CounterMetric();
