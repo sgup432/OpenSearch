@@ -34,7 +34,7 @@ import java.util.Collections;
 public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalListener<K, V> {
 
     private final PersistentCacheManager cacheManager;
-    public final Cache<K, V> cache; // make private after debug
+    private final Cache<K, V> cache; // make private after debug
 
     private final Class<K> keyType; // I think these are needed to pass to newCacheConfigurationBuilder
     private final Class<V> valueType;
@@ -48,6 +48,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     private static final String cacheAlias = "diskTier";
     private final boolean isPersistent;
     private CounterMetric count; // number of entries in cache
+    private EhcacheEventListener listener;
     // private RBMIntKeyLookupStore keystore;
     // private CacheTierPolicy[] policies;
     // private IndicesRequestCacheDiskTierPolicy policy;
@@ -57,17 +58,18 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         this.valueType = valueType;
         this.isPersistent = isPersistent;
         this.count = new CounterMetric();
+        this.listener = new EhcacheEventListener<K, V>(this, this.count);
         statsService = new DefaultStatisticsService();
 
         // our EhcacheEventListener should receive events every time an entry is changed
         CacheEventListenerConfigurationBuilder listenerConfig = CacheEventListenerConfigurationBuilder
-            .newEventListenerConfiguration(new EhcacheEventListener<K, V>(this, this.count),
+            .newEventListenerConfiguration(listener,
                 EventType.EVICTED,
                 EventType.EXPIRED,
                 EventType.REMOVED,
                 EventType.UPDATED,
-                EventType.CREATED);
-            //.ordered().asynchronous(); // ordered() has some performance penalty as compared to unordered(), we can also use synchronous()
+                EventType.CREATED)
+            .ordered().asynchronous(); // ordered() has some performance penalty as compared to unordered(), we can also use synchronous()
 
         PooledExecutionServiceConfiguration threadConfig = PooledExecutionServiceConfigurationBuilder.newPooledExecutionServiceConfigurationBuilder()
             .defaultPool("default", MIN_WRITE_THREADS, MAX_WRITE_THREADS)
@@ -79,7 +81,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
             .with(CacheManagerBuilder.persistence(DISK_CACHE_FP))
             .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
                 keyType, valueType, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(maxWeightInBytes, MemoryUnit.B, isPersistent))
-                .withService(listenerConfig) // stackoverflow shows .add(), but IDE says this is deprecated. idk
+                .withService(listenerConfig)
             ).build(true);
         this.cache = cacheManager.getCache(cacheAlias, keyType, valueType);
         this.getTimeMillisEWMA = new ExponentiallyWeightedMovingAverage(GET_TIME_EWMA_ALPHA, 10);
@@ -91,7 +93,7 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
 
     @Override
     public V get(K key) {
-        // do we need to do the future stuff? I don't think so?
+        // I don't think we need to do the future stuff as the cache is threadsafe
 
         // if (keystore.contains(key.hashCode()) {
         long now = System.nanoTime();
@@ -101,7 +103,6 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         return value;
         // }
         // return null;
-
     }
 
     @Override
@@ -111,7 +112,6 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         // CheckDataResult policyResult = policy.checkData(value)
         // if (policyResult.isAccepted()) {
         cache.put(key, value);
-        //count++;
         // keystore.add(key.hashCode());
         // else { do something with policyResult.deniedReason()? }
         // }
@@ -129,7 +129,6 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
 
         // if (keystore.contains(key.hashCode()) {
         cache.remove(key);
-        //count--;
         // keystore.remove(key.hashCode());
         // }
     }
@@ -159,7 +158,6 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
     @Override
     public int count() {
         return (int) count.count();
-        //return (int) getTierStats().getMappings();
     }
 
     protected void countInc() {
@@ -183,35 +181,6 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         return getTimeMillisEWMA.getAverage();
     }
 
-    // these aren't really needed, ShardRequestCache handles it
-    // Also, it seems that ehcache doesn't have functioning statistics anyway!
-
-    /*public TierStatistics getTierStats() {
-        return statsService.getCacheStatistics(cacheAlias).getTierStatistics().get("Disk");
-    }
-
-    public long getHits() {
-        return getTierStats().getHits();
-    }
-
-    public long getMisses() {
-        return getTierStats().getMisses();
-    }
-
-    public long getWeightBytes() {
-        return getTierStats().getOccupiedByteSize();
-    }
-
-    public long getEvictions() {
-        return getTierStats().getEvictions();
-    }
-
-    public double getHitRatio() {
-        TierStatistics ts = getTierStats();
-        long hits = ts.getHits();
-        return hits / (hits + ts.getMisses());
-    }*/
-
     public boolean isPersistent() {
         return isPersistent;
     }
@@ -222,12 +191,4 @@ public class EhcacheDiskCachingTier<K, V> implements CachingTier<K, V>, RemovalL
         cacheManager.removeCache(cacheAlias);
         cacheManager.close();
     }
-
-
-    // See https://stackoverflow.com/questions/45827753/listenerobject-not-found-in-imports-for-ehcache-3 for API reference
-    // it's not actually documented by ehcache :(
-    // This class is used to get the old value from mutating calls to the cache, and it uses those to create a RemovalNotification
-    // It also handles incrementing and decrementing the count for the disk tier, since ehcache's statistics functionality
-    // does not seem to work
-
 }

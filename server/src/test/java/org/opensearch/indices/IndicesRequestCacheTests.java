@@ -142,6 +142,9 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
     }
 
     public void testAddDirectToEhcache() throws Exception {
+        // this test is for debugging serialization issues and can eventually be removed
+        // Put breakpoints at line 260 of AbstractOffHeapStore to catch serialization errors
+        // that would otherwise fail silently
         ShardRequestCache requestCacheStats = new ShardRequestCache();
         Settings.Builder settingsBuilder = Settings.builder();
         long heapSizeBytes = 1000;
@@ -162,7 +165,9 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
         IndicesRequestCache.Key key = new IndicesRequestCache.Key(entity, reader.getReaderCacheHelper().getKey(), termBytes);
 
         TestBytesReference value = new TestBytesReference(124);
-        cache.tieredCacheHandler.getDiskCachingTier().cache.put(key, value);
+        cache.tieredCacheHandler.getDiskCachingTier().put(key, value);
+
+        System.out.println("Size: " + cache.tieredCacheHandler.getDiskCachingTier().count());
 
         IOUtils.close(reader, writer, dir, cache);
         cache.closeDiskTier();

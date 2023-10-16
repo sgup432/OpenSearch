@@ -36,7 +36,7 @@ public class TieredCacheSpilloverStrategyHandler<K, V> implements TieredCacheHan
     private TieredCacheSpilloverStrategyHandler(
         OnHeapCachingTier<K, V> onHeapCachingTier,
         EhcacheDiskCachingTier<K, V> diskCachingTier,
-        // changed to EhcacheDiskCachingTier from CachingTier, to enable close() method, which is needed for tests. Implement close() in CachingTier or DiskCachingTier or something?
+        // changed to EhcacheDiskCachingTier from CachingTier, to enable close() method, which is needed for tests. Implement close() in CachingTier or DiskCachingTier?
         TieredCacheEventListener<K, V> tieredCacheEventListener
     ) {
         this.onHeapCachingTier = Objects.requireNonNull(onHeapCachingTier);

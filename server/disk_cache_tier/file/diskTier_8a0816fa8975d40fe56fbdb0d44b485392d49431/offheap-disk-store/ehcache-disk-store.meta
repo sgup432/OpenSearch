@@ -1,4 +1,0 @@
-#Key and value types
-#Thu Oct 12 16:18:26 EDT 2023
-valueType=org.opensearch.core.common.bytes.BytesReference
-keyType=org.opensearch.indices.IndicesRequestCache$Key
