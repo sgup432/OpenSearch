@@ -13,4 +13,10 @@ public interface DiskCachingTier<K, V> extends CachingTier<K, V> {
      * Closes the disk tier.
      */
     void close();
+
+    /**
+     * Get the EWMA time in milliseconds for a get().
+     * @return
+     */
+    double getTimeMillisEWMA();
 }

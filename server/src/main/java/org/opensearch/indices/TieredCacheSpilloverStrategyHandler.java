@@ -147,6 +147,11 @@ public class TieredCacheSpilloverStrategyHandler<K extends Writeable, V> impleme
         diskCachingTier.close();
     }
 
+    @Override
+    public double diskGetTimeMillisEWMA() {
+        return diskCachingTier.getTimeMillisEWMA();
+    }
+
     public static class CacheValue<V> {
         V value;
         TierType source;

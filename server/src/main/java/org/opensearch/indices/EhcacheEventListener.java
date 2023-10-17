@@ -62,6 +62,5 @@ public class EhcacheEventListener implements CacheEventListener<EhcacheKey, Byte
             IndicesRequestCache.Key key = tier.convertEhcacheKeyToOriginal(ehcacheKey);
             removalListener.onRemoval(new RemovalNotification<>(key, oldValue, reason));
         } catch (Exception ignored) {}
-
     }
 }

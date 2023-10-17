@@ -23,4 +23,6 @@ public interface TieredCacheHandler<K, V> {
     CachingTier<K, V> getOnHeapCachingTier();
 
     void closeDiskTier();
+
+    double diskGetTimeMillisEWMA();
 }

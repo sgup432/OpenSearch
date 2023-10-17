@@ -129,10 +129,8 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
         ).setMaximumWeight(sizeInBytes).setExpireAfterAccess(expire).build();
 
         int diskTierWeight = 100 * 1048576; // 100 MB, for testing only
-
-        // changed to Integer for testing of bulk writes
         EhcacheDiskCachingTier diskCachingTier;
-        diskCachingTier = new EhcacheDiskCachingTier(false, diskTierWeight, 0, this); // making non-persistent for now
+        diskCachingTier = new EhcacheDiskCachingTier(diskTierWeight, 0, this);
         tieredCacheHandler = new TieredCacheSpilloverStrategyHandler.Builder<Key, BytesReference>().setOnHeapCachingTier(
             openSearchOnHeapCache
         ).setOnDiskCachingTier(diskCachingTier).setTieredCacheEventListener(this).build();
