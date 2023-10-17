@@ -15,8 +15,6 @@ import org.ehcache.config.builders.CacheManagerBuilder;
 import org.ehcache.config.builders.PooledExecutionServiceConfigurationBuilder;
 import org.ehcache.config.builders.ResourcePoolsBuilder;
 import org.ehcache.config.units.MemoryUnit;
-import org.ehcache.event.EventFiring;
-import org.ehcache.event.EventOrdering;
 import org.ehcache.event.EventType;
 import org.ehcache.impl.config.executor.PooledExecutionServiceConfiguration;
 import org.opensearch.common.ExponentiallyWeightedMovingAverage;
@@ -29,7 +27,6 @@ import org.opensearch.core.common.io.stream.BytesStreamInput;
 
 import java.io.IOException;
 import java.util.Collections;
-import java.util.EnumSet;
 
 public class EhcacheDiskCachingTier implements DiskCachingTier<IndicesRequestCache.Key, BytesReference>, RemovalListener<IndicesRequestCache.Key, BytesReference> {
 
