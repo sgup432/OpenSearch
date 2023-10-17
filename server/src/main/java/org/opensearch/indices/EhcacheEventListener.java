@@ -17,7 +17,7 @@ import org.opensearch.common.cache.RemovalReason;
 import org.opensearch.core.common.bytes.BytesReference;
 
 public class EhcacheEventListener implements CacheEventListener<EhcacheKey, BytesReference> {
-    // Receives key-value pairs (BytesReference, BytesReference), but must transform into (Key, BytesReference)
+    // Receives key-value pairs (EhcacheKey, BytesReference), but must transform into (Key, BytesReference)
     // to send removal notifications
     private final RemovalListener<IndicesRequestCache.Key, BytesReference> removalListener;
     private final EhcacheDiskCachingTier tier;

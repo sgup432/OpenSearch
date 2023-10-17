@@ -59,11 +59,8 @@ import org.ehcache.core.statistics.TierStatistics;
 import org.ehcache.event.EventType;
 import org.ehcache.impl.config.executor.PooledExecutionServiceConfiguration;
 import org.opensearch.common.CheckedSupplier;
-import org.opensearch.common.cache.RemovalListener;
-import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
-import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.io.IOUtils;
 import org.opensearch.core.common.bytes.AbstractBytesReference;
@@ -164,128 +161,29 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
         DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
         AtomicBoolean indexShard = new AtomicBoolean(true);
         TestEntity entity = new TestEntity(requestCacheStats, indexShard);
-        Loader loader = new Loader(reader, 0);
-        IndicesRequestCache.Key[] keys = new IndicesRequestCache.Key[9];
         TermQueryBuilder termQuery = new TermQueryBuilder("id", "0");
         BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
         String rKey = ((OpenSearchDirectoryReader) reader).getDelegatingCacheHelper().getDelegatingCacheKey().getId().toString();
         IndicesRequestCache.Key key = cache.new Key(entity, termBytes, rKey);
 
-        //TestBytesReference value = new TestBytesReference(124);
         BytesReference value = new BytesArray(new byte[]{0});
         cache.tieredCacheHandler.getDiskCachingTier().put(key, value);
 
-        System.out.println("Size: " + cache.tieredCacheHandler.getDiskCachingTier().count());
+        BytesReference res = cache.tieredCacheHandler.getDiskCachingTier().get(key);
+        assertEquals(value, res);
+        assertEquals(1, cache.tieredCacheHandler.count(TierType.DISK));
 
         IOUtils.close(reader, writer, dir, cache);
         cache.closeDiskTier();
     }
 
-    /*public void testSimpleEhcache() throws Exception {
-        // for debug only, delete
-        CounterMetric count = new CounterMetric();
-        String cacheAlias = "dummy";
-
-        class DummyRemovalListener implements RemovalListener<Integer, String> {
-            public DummyRemovalListener() { }
-            @Override
-            public void onRemoval(RemovalNotification<Integer, String> notification) {
-                System.out.println(":)");
-            }
-        }
-
-        CacheEventListenerConfigurationBuilder listenerConfig = CacheEventListenerConfigurationBuilder
-            .newEventListenerConfiguration(new EhcacheEventListener<Integer, String>(new DummyRemovalListener(), count),
-                EventType.EVICTED,
-                EventType.EXPIRED,
-                EventType.REMOVED,
-                EventType.UPDATED,
-                EventType.CREATED)
-        .ordered().asynchronous(); // ordered() has some performance penalty as compared to unordered(), we can also use synchronous()
-
-        StatisticsService statsService = new DefaultStatisticsService();
-
-        PooledExecutionServiceConfiguration threadConfig = PooledExecutionServiceConfigurationBuilder.newPooledExecutionServiceConfigurationBuilder()
-            .defaultPool("default", 0, 4)
-            .build();
-
-        PersistentCacheManager cacheManager;
-
-        boolean doIntCache = false;
-
-        if (doIntCache) {
-            cacheManager = CacheManagerBuilder.newCacheManagerBuilder()
-                .using(statsService) // https://stackoverflow.com/questions/40453859/how-to-get-ehcache-3-1-statistics
-                .using(threadConfig)
-                .with(CacheManagerBuilder.persistence(EhcacheDiskCachingTier.DISK_CACHE_FP))
-                .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
-                        Integer.class, String.class, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(10, MemoryUnit.MB, false))
-                    .withService(listenerConfig)
-                ).build(true);
-            Cache<Integer, String> integerCache = cacheManager.getCache(cacheAlias, Integer.class, String.class);
-
-            integerCache.put(0, "blorp");
-            System.out.println("Counter value = " + count.count());
-            String res = integerCache.get(0);
-            System.out.println("Got result " + res);
-            System.out.println("Counter value = " + count.count());
-        } else {
-            cacheManager = CacheManagerBuilder.newCacheManagerBuilder()
-                .using(statsService) // https://stackoverflow.com/questions/40453859/how-to-get-ehcache-3-1-statistics
-                .using(threadConfig)
-                .with(CacheManagerBuilder.persistence(EhcacheDiskCachingTier.DISK_CACHE_FP))
-                .withCache(cacheAlias, CacheConfigurationBuilder.newCacheConfigurationBuilder(
-                        DummySerializableKey.class, String.class, ResourcePoolsBuilder.newResourcePoolsBuilder().disk(10, MemoryUnit.MB, false))
-                    .withService(listenerConfig)
-                ).build(true);
-            Cache<DummySerializableKey, String> cache = cacheManager.getCache(cacheAlias, DummySerializableKey.class, String.class);
-
-            DummySerializableKey key = new DummySerializableKey(Integer.valueOf(0), "blah");
-            cache.put(key, "blorp");
-            System.out.println("Counter value = " + count.count());
-            String res = cache.get(key);
-            System.out.println("Got result " + res);
-            System.out.println("Counter value = " + count.count());
-            TierStatistics ts = statsService.getCacheStatistics(cacheAlias).getTierStatistics().get("Disk");
-            System.out.println("self-reported count = " + ts.getMappings());
-            System.out.println("self-reported misses = " + ts.getMisses());
-            System.out.println("self-reported hits = " + ts.getHits());
-
-            List<Cache.Entry<DummySerializableKey, String>> foos = new ArrayList<>();
-            for(Cache.Entry<DummySerializableKey, String> entry : cache) {
-                foos.add(entry);
-            }
-            int j = 0;
-            j++;
-            System.out.println(j);
-        }
-
-        /*Directory dir = newDirectory();
-        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
-        writer.addDocument(newDoc(0, "foo"));
-        DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
-        AtomicBoolean indexShard = new AtomicBoolean(true);
-        ShardRequestCache requestCacheStats = new ShardRequestCache();
-        TestEntity entity = new TestEntity(requestCacheStats, indexShard);
-        Loader loader = new Loader(reader, 0);
-        System.out.println("On-heap cache size at start = " + requestCacheStats.stats().getMemorySizeInBytes());
-        IndicesRequestCache.Key[] keys = new IndicesRequestCache.Key[9];
-        TermQueryBuilder termQuery = new TermQueryBuilder("id", "0");
-        BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
-        IndicesRequestCache.Key key = new IndicesRequestCache.Key(entity, reader.getReaderCacheHelper().getKey(), termBytes);*/
-
-
-        /*cacheManager.removeCache(cacheAlias);
-        cacheManager.close();
-        //IOUtils.close(reader, writer, dir);
-
-    }*/
-
     public void testSpillover() throws Exception {
         // fill the on-heap cache until we spill over
         ShardRequestCache requestCacheStats = new ShardRequestCache();
         Settings.Builder settingsBuilder = Settings.builder();
-        long heapSizeBytes = 1000; // each of these queries is 115 bytes, so we can fit 8 in the heap cache
+        long heapSizeBytes = 1000; // each of these queries is 131 bytes, so we can fit 7 in the heap cache
+        int heapKeySize = 131;
+        int maxNumInHeap = 1000 / heapKeySize;
         settingsBuilder.put("indices.requests.cache.size", new ByteSizeValue(heapSizeBytes));
         IndicesRequestCache cache = new IndicesRequestCache(settingsBuilder.build(), getInstanceFromNode(IndicesService.class));
 
@@ -298,8 +196,8 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
         TestEntity entity = new TestEntity(requestCacheStats, indexShard);
         Loader loader = new Loader(reader, 0);
         System.out.println("On-heap cache size at start = " + requestCacheStats.stats().getMemorySizeInBytes());
-        IndicesRequestCache.Key[] keys = new IndicesRequestCache.Key[9];
-        for (int i = 0; i < 9; i++) {
+        IndicesRequestCache.Key[] keys = new IndicesRequestCache.Key[maxNumInHeap + 1];
+        for (int i = 0; i < maxNumInHeap + 1; i++) {
             TermQueryBuilder termQuery = new TermQueryBuilder("id", String.valueOf(i));
             BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
             String rKey = ((OpenSearchDirectoryReader) reader).getDelegatingCacheHelper().getDelegatingCacheKey().getId().toString();
@@ -310,15 +208,18 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
         }
         // attempt to get value from disk cache, the first key should have been evicted
         BytesReference firstValue = cache.tieredCacheHandler.get(keys[0]);
-        System.out.println("Final on-heap cache size = " + requestCacheStats.stats().getMemorySizeInBytes()); // is correctly 920
-        //System.out.println("Final self-reported disk size = " + cache.tieredCacheHandler.getDiskWeightBytes()); // is 0, should be 115
-        System.out.println("On-heap tier evictions = " + requestCacheStats.stats().getEvictions()); // is correctly 1
-        System.out.println("Disk tier hits = " + requestCacheStats.stats(TierType.DISK).getHitCount()); // should be 1, is 0 bc keys not serializable
-        System.out.println("Disk tier misses = " + requestCacheStats.stats(TierType.DISK).getMissCount()); // should be 9, is 10 bc keys not serializable
-        //System.out.println("Disk tier self-reported misses = " + cache.tieredCacheHandler.getDiskCachingTier().getMisses()); // should be same as other one
-        System.out.println("On-heap tier hits = " + requestCacheStats.stats().getHitCount()); // is correctly 0
-        System.out.println("On-heap tier misses = " + requestCacheStats.stats().getMissCount()); // is correctly 10
-        System.out.println("Disk count = " + cache.tieredCacheHandler.getDiskCachingTier().count()); // should be 1, is 0
+
+        assertEquals(maxNumInHeap * heapKeySize, requestCacheStats.stats().getMemorySizeInBytes());
+        // TODO: disk weight bytes
+        assertEquals(1, requestCacheStats.stats().getEvictions());
+        assertEquals(1, requestCacheStats.stats(TierType.DISK).getHitCount());
+        assertEquals(maxNumInHeap + 1, requestCacheStats.stats(TierType.DISK).getMissCount());
+        assertEquals(0, requestCacheStats.stats().getHitCount());
+        assertEquals(maxNumInHeap + 2, requestCacheStats.stats().getMissCount());
+        assertEquals(maxNumInHeap, cache.tieredCacheHandler.count(TierType.ON_HEAP));
+        assertEquals(1, cache.tieredCacheHandler.count(TierType.DISK));
+
+        // more? 
         IOUtils.close(reader, writer, dir, cache);
         cache.closeDiskTier();
     }

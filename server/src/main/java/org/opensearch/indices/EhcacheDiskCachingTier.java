@@ -9,40 +9,30 @@
 package org.opensearch.indices;
 
 import org.ehcache.PersistentCacheManager;
+import org.ehcache.config.CacheRuntimeConfiguration;
 import org.ehcache.config.builders.CacheConfigurationBuilder;
 import org.ehcache.config.builders.CacheEventListenerConfigurationBuilder;
 import org.ehcache.config.builders.CacheManagerBuilder;
 import org.ehcache.config.builders.PooledExecutionServiceConfigurationBuilder;
 import org.ehcache.config.builders.ResourcePoolsBuilder;
 import org.ehcache.config.units.MemoryUnit;
-import org.ehcache.core.internal.statistics.DefaultStatisticsService;
-import org.ehcache.core.spi.service.StatisticsService;
-import org.ehcache.core.statistics.TierStatistics;
-import org.ehcache.event.CacheEvent;
-import org.ehcache.event.CacheEventListener;
+import org.ehcache.event.EventFiring;
+import org.ehcache.event.EventOrdering;
 import org.ehcache.event.EventType;
 import org.ehcache.impl.config.executor.PooledExecutionServiceConfiguration;
-import org.opensearch.action.admin.indices.exists.indices.IndicesExistsAction;
 import org.opensearch.common.ExponentiallyWeightedMovingAverage;
 import org.opensearch.common.cache.RemovalListener;
 import org.ehcache.Cache;
 import org.opensearch.common.cache.RemovalNotification;
-import org.opensearch.common.cache.RemovalReason;
-import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.common.io.stream.BytesStreamInput;
-import org.opensearch.core.common.io.stream.StreamInput;
-import org.opensearch.core.common.io.stream.StreamOutput;
-import org.opensearch.core.common.io.stream.Writeable;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.util.Collections;
+import java.util.EnumSet;
 
 public class EhcacheDiskCachingTier implements DiskCachingTier<IndicesRequestCache.Key, BytesReference>, RemovalListener<IndicesRequestCache.Key, BytesReference> {
-    // & Writeable.Reader<K> ?
 
     public static PersistentCacheManager cacheManager;
     private Cache<EhcacheKey, BytesReference> cache;
@@ -124,7 +114,22 @@ public class EhcacheDiskCachingTier implements DiskCachingTier<IndicesRequestCac
                     .withService(listenerConfig));
         } catch (IllegalArgumentException e) {
             // Thrown when the cache already exists, which may happen in test cases
+            // In this case the listener is configured to send messages to some other disk tier instance, which we don't want
+            // (it was set up unnecessarily by the test case)
+
+            // change config of existing cache to use this listener rather than the one instantiated by the test case
             cache = cacheManager.getCache(cacheAlias, EhcacheKey.class, BytesReference.class);
+            // cache.getRuntimeConfiguration().cacheConfigurationListenerList contains the old listener, but it's private
+            // and theres no method to clear it unless you have the actual listener object, so it has to stay i think
+
+            cache.getRuntimeConfiguration().registerCacheEventListener(listener, EventOrdering.ORDERED, EventFiring.ASYNCHRONOUS,
+                EnumSet.of(
+                    EventType.EVICTED,
+                    EventType.EXPIRED,
+                    EventType.REMOVED,
+                    EventType.UPDATED,
+                    EventType.CREATED));
+            int k = 1;
         }
     }
 
@@ -204,6 +209,7 @@ public class EhcacheDiskCachingTier implements DiskCachingTier<IndicesRequestCac
 
     @Override
     public int count() {
+        int j = 0;
         return (int) count.count();
     }
 

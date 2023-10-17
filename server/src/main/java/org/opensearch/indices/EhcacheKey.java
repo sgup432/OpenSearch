@@ -10,7 +10,6 @@ package org.opensearch.indices;
 
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.core.common.bytes.BytesReference;
-import org.opensearch.core.common.io.stream.BytesStreamInput;
 import org.opensearch.core.common.io.stream.Writeable;
 
 import java.io.IOException;

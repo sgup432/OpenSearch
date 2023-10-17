@@ -91,6 +91,15 @@ public class TieredCacheSpilloverStrategyHandler<K extends Writeable, V> impleme
         return totalCount;
     }
 
+    public long count(TierType tierType) {
+        for (CachingTier<K, V> cachingTier : cachingTierList) {
+            if (cachingTier.getTierType() == tierType) {
+                return cachingTier.count();
+            }
+        }
+        return -1L;
+    }
+
     @Override
     public void onRemoval(RemovalNotification<K, V> notification) {
         if (RemovalReason.EVICTED.equals(notification.getRemovalReason())) {
@@ -173,7 +182,7 @@ public class TieredCacheSpilloverStrategyHandler<K extends Writeable, V> impleme
         public TieredCacheSpilloverStrategyHandler<K, V> build() {
             return new TieredCacheSpilloverStrategyHandler<K, V>(
                 this.onHeapCachingTier,
-                this.diskCachingTier, // not sure why it was yelling about this, it already is an EhcacheDiskCachingTier
+                this.diskCachingTier,
                 this.tieredCacheEventListener
             );
         }
