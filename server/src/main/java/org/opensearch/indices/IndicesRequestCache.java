@@ -294,7 +294,7 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
      *
      * @opensearch.internal
      */
-    class Key implements Accountable, Writeable {
+    class Key implements Accountable, Writeable, Writeable.Reader<Key> {
         private final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(Key.class);
 
         public final CacheEntity entity; // use as identity equality
@@ -348,6 +348,11 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
             out.writeOptionalWriteable(entity);
             out.writeOptionalString(readerCacheKeyUniqueId);
             out.writeBytesReference(value);
+        }
+
+        @Override
+        public Key read(StreamInput in) throws IOException {
+            return new Key(in);
         }
     }
 

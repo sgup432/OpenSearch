@@ -31,6 +31,7 @@ import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.common.io.stream.BytesStreamInput;
+import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.core.common.io.stream.Writeable;
 
@@ -40,6 +41,7 @@ import java.io.OutputStream;
 import java.util.Collections;
 
 public class EhcacheDiskCachingTier<K extends Writeable, V> implements DiskCachingTier<K, V>, RemovalListener<K, V> {
+    // & Writeable.Reader<K> ?
 
     private final PersistentCacheManager cacheManager;
     private final Cache<EhcacheKey, V> cache;
@@ -108,12 +110,16 @@ public class EhcacheDiskCachingTier<K extends Writeable, V> implements DiskCachi
     }
 
     @Override
-    public V get(K key) throws IOException {
+    public V get(K key)  {
         // I don't think we need to do the future stuff as the cache is threadsafe
 
         // if (keystore.contains(key.hashCode()) {
         long now = System.nanoTime();
-        V value = cache.get(new EhcacheKey(key));
+        V value = null;
+        try {
+            value = cache.get(new EhcacheKey(key));
+        } catch (IOException ignored) { // do smth with this later
+        }
         double tookTimeMillis = ((double) (System.nanoTime() - now)) / 1000000;
         getTimeMillisEWMA.addValue(tookTimeMillis);
         return value;
@@ -122,12 +128,15 @@ public class EhcacheDiskCachingTier<K extends Writeable, V> implements DiskCachi
     }
 
     @Override
-    public void put(K key, V value) throws IOException {
+    public void put(K key, V value) {
         // No need to get old value, this is handled by EhcacheEventListener.
 
         // CheckDataResult policyResult = policy.checkData(value)
         // if (policyResult.isAccepted()) {
-        cache.put(new EhcacheKey(key), value);
+        try {
+            cache.put(new EhcacheKey(key), value);
+        } catch (IOException ignored) { // do smth with this later
+        }
         // keystore.add(key.hashCode());
         // else { do something with policyResult.deniedReason()? }
         // }
@@ -139,12 +148,15 @@ public class EhcacheDiskCachingTier<K extends Writeable, V> implements DiskCachi
     }
 
     @Override
-    public void invalidate(K key) throws IOException {
+    public void invalidate(K key) {
         // keep keystore check to avoid unneeded disk seek
         // RemovalNotification is handled by EhcacheEventListener
 
         // if (keystore.contains(key.hashCode()) {
-        cache.remove(new EhcacheKey(key));
+        try {
+            cache.remove(new EhcacheKey(key));
+        } catch (IOException ignored) { // do smth with this later
+        }
         // keystore.remove(key.hashCode());
         // }
     }
@@ -207,6 +219,16 @@ public class EhcacheDiskCachingTier<K extends Writeable, V> implements DiskCachi
         is.readBytes(bytes, 0, bytes.length);
         // we somehow have to use the Reader thing in the Writeable interface
         // otherwise its not generic
+        try {
+            K key = keyType.getDeclaredConstructor(new Class[]{StreamInput.class}).newInstance();
+            // This cannot be the proper way to do it
+            // but if it is, make K extend some interface guaranteeing it has such a constructor (which im sure already exists somewhere in OS)
+            return key;
+        } catch (Exception e) {
+            System.out.println("Was unable to reconstruct EhcacheKey into K");
+            e.printStackTrace();
+        }
+        return null;
     }
 
     @Override

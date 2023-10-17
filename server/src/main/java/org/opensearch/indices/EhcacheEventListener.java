@@ -26,7 +26,7 @@ public class EhcacheEventListener<K extends Writeable, V> implements CacheEventL
     // Receives key-value pairs (BytesReference, BytesReference), but must transform into (Key, BytesReference)
     // to send removal notifications
     private RemovalListener<K, V> removalListener;
-    private EhcacheDiskCachingTier tier;
+    private EhcacheDiskCachingTier<K, V> tier;
     EhcacheEventListener(RemovalListener<K, V> removalListener, EhcacheDiskCachingTier tier) {
         this.removalListener = removalListener;
         this.tier = tier; // needed to handle count changes

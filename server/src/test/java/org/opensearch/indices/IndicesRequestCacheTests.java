@@ -181,10 +181,10 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
         cache.closeDiskTier();
     }
 
-    public void testSimpleEhcache() throws Exception {
+    /*public void testSimpleEhcache() throws Exception {
         // for debug only, delete
-         CounterMetric count = new CounterMetric();
-         String cacheAlias = "dummy";
+        CounterMetric count = new CounterMetric();
+        String cacheAlias = "dummy";
 
         class DummyRemovalListener implements RemovalListener<Integer, String> {
             public DummyRemovalListener() { }
@@ -275,10 +275,11 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
         IndicesRequestCache.Key key = new IndicesRequestCache.Key(entity, reader.getReaderCacheHelper().getKey(), termBytes);*/
 
 
-        cacheManager.removeCache(cacheAlias);
+        /*cacheManager.removeCache(cacheAlias);
         cacheManager.close();
         //IOUtils.close(reader, writer, dir);
-    }
+
+    }*/
 
     public void testSpillover() throws Exception {
         // fill the on-heap cache until we spill over
