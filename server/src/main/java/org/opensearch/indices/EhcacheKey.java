@@ -20,9 +20,6 @@ import java.util.Arrays;
 public class EhcacheKey implements Serializable {
     // the IndicesRequestCache.Key is not Serializable, but it is Writeable.
     // We use the output stream's bytes in this wrapper class and implement the appropriate interfaces/methods.
-    // Unfortunately it's not possible to define this class as EhcacheKey<K> and use that as ehcache keys,
-    // because of type erasure. However, the only context EhcacheKey objects would be compared to one another
-    // is when they are used for the same cache, so they will always refer to the same K.
     private byte[] bytes;
 
     public EhcacheKey(Writeable key) throws IOException {

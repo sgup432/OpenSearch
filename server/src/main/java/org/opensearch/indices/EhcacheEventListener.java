@@ -14,28 +14,22 @@ import org.ehcache.event.EventType;
 import org.opensearch.common.cache.RemovalListener;
 import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.cache.RemovalReason;
-import org.opensearch.common.metrics.CounterMetric;
-import org.opensearch.core.common.io.stream.BytesStreamInput;
-import org.opensearch.core.common.io.stream.StreamInput;
-import org.opensearch.core.common.io.stream.Writeable;
-import org.opensearch.indices.EhcacheDiskCachingTier;
+import org.opensearch.core.common.bytes.BytesReference;
 
-// moved to another file for testing flexibility purposes
-
-public class EhcacheEventListener<K extends Writeable, V> implements CacheEventListener<EhcacheKey, V> {
+public class EhcacheEventListener implements CacheEventListener<EhcacheKey, BytesReference> {
     // Receives key-value pairs (BytesReference, BytesReference), but must transform into (Key, BytesReference)
     // to send removal notifications
-    private RemovalListener<K, V> removalListener;
-    private EhcacheDiskCachingTier<K, V> tier;
-    EhcacheEventListener(RemovalListener<K, V> removalListener, EhcacheDiskCachingTier tier) {
+    private final RemovalListener<IndicesRequestCache.Key, BytesReference> removalListener;
+    private final EhcacheDiskCachingTier tier;
+    EhcacheEventListener(RemovalListener<IndicesRequestCache.Key, BytesReference> removalListener, EhcacheDiskCachingTier tier) {
         this.removalListener = removalListener;
         this.tier = tier; // needed to handle count changes
     }
     @Override
-    public void onEvent(CacheEvent<? extends EhcacheKey, ? extends V> event) {
+    public void onEvent(CacheEvent<? extends EhcacheKey, ? extends BytesReference> event) {
         EhcacheKey ehcacheKey = event.getKey();
-        V oldValue = event.getOldValue();
-        V newValue = event.getNewValue();
+        BytesReference oldValue = event.getOldValue();
+        BytesReference newValue = event.getNewValue();
         EventType eventType = event.getType();
 
         // handle changing count for the disk tier
@@ -65,8 +59,8 @@ public class EhcacheEventListener<K extends Writeable, V> implements CacheEventL
                 reason = null;
         }
         try {
-            K key = tier.convertEhcacheKeyToOriginal(ehcacheKey);
-            removalListener.onRemoval(new RemovalNotification<K, V>(key, oldValue, reason));
+            IndicesRequestCache.Key key = tier.convertEhcacheKeyToOriginal(ehcacheKey);
+            removalListener.onRemoval(new RemovalNotification<>(key, oldValue, reason));
         } catch (Exception ignored) {}
 
     }

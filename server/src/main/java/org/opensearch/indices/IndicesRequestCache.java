@@ -54,7 +54,6 @@ import org.opensearch.core.common.unit.ByteSizeValue;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -132,8 +131,8 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
         int diskTierWeight = 100 * 1048576; // 100 MB, for testing only
 
         // changed to Integer for testing of bulk writes
-        EhcacheDiskCachingTier<Key, BytesReference> diskCachingTier;
-        diskCachingTier = new EhcacheDiskCachingTier<>(true, diskTierWeight, 0, Key.class, BytesReference.class);
+        EhcacheDiskCachingTier diskCachingTier;
+        diskCachingTier = new EhcacheDiskCachingTier(false, diskTierWeight, 0, this); // making non-persistent for now
         tieredCacheHandler = new TieredCacheSpilloverStrategyHandler.Builder<Key, BytesReference>().setOnHeapCachingTier(
             openSearchOnHeapCache
         ).setOnDiskCachingTier(diskCachingTier).setTieredCacheEventListener(this).build();
@@ -294,7 +293,7 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
      *
      * @opensearch.internal
      */
-    class Key implements Accountable, Writeable, Writeable.Reader<Key> {
+    class Key implements Accountable, Writeable {
         private final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(Key.class);
 
         public final CacheEntity entity; // use as identity equality
@@ -348,11 +347,6 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
             out.writeOptionalWriteable(entity);
             out.writeOptionalString(readerCacheKeyUniqueId);
             out.writeBytesReference(value);
-        }
-
-        @Override
-        public Key read(StreamInput in) throws IOException {
-            return new Key(in);
         }
     }
 

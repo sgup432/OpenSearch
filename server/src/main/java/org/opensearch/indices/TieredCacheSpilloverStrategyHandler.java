@@ -36,7 +36,7 @@ public class TieredCacheSpilloverStrategyHandler<K extends Writeable, V> impleme
 
     private TieredCacheSpilloverStrategyHandler(
         OnHeapCachingTier<K, V> onHeapCachingTier,
-        EhcacheDiskCachingTier<K, V> diskCachingTier,
+        DiskCachingTier<K, V> diskCachingTier,
         // changed to EhcacheDiskCachingTier from CachingTier, to enable close() method, which is needed for tests. Implement close() in CachingTier or DiskCachingTier?
         TieredCacheEventListener<K, V> tieredCacheEventListener
     ) {
@@ -150,7 +150,7 @@ public class TieredCacheSpilloverStrategyHandler<K extends Writeable, V> impleme
 
     public static class Builder<K extends Writeable, V> {
         private OnHeapCachingTier<K, V> onHeapCachingTier;
-        private CachingTier<K, V> diskCachingTier;
+        private DiskCachingTier<K, V> diskCachingTier;
         private TieredCacheEventListener<K, V> tieredCacheEventListener;
 
         public Builder() {}
@@ -160,7 +160,7 @@ public class TieredCacheSpilloverStrategyHandler<K extends Writeable, V> impleme
             return this;
         }
 
-        public Builder<K, V> setOnDiskCachingTier(CachingTier<K, V> diskCachingTier) {
+        public Builder<K, V> setOnDiskCachingTier(DiskCachingTier<K, V> diskCachingTier) {
             this.diskCachingTier = diskCachingTier;
             return this;
         }
@@ -173,7 +173,7 @@ public class TieredCacheSpilloverStrategyHandler<K extends Writeable, V> impleme
         public TieredCacheSpilloverStrategyHandler<K, V> build() {
             return new TieredCacheSpilloverStrategyHandler<K, V>(
                 this.onHeapCachingTier,
-                (EhcacheDiskCachingTier<K, V>) this.diskCachingTier, // not sure why it was yelling about this, it already is an EhcacheDiskCachingTier
+                this.diskCachingTier, // not sure why it was yelling about this, it already is an EhcacheDiskCachingTier
                 this.tieredCacheEventListener
             );
         }
