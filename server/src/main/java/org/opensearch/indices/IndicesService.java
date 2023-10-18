@@ -1939,6 +1939,10 @@ public class IndicesService extends AbstractLifecycleComponent
             || (danglingIndicesToWrite.isEmpty() && danglingIndicesThreadPoolExecutor.getActiveCount() == 0);
     }
 
+    public String getNodeId() {
+        return nodeEnv.nodeId();
+    }
+
     /**
      * Validates the cluster default index refresh interval.
      *
