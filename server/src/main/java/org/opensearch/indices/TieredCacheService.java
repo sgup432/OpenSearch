@@ -8,7 +8,15 @@
 
 package org.opensearch.indices;
 
-public interface TieredCacheHandler<K, V> {
+import java.util.Optional;
+
+/**
+ * This service encapsulates all logic to write/fetch to/from appropriate tiers. Can be implemented with different
+ * flavors like spillover etc.
+ * @param <K> Type of key
+ * @param <V> Type of value
+ */
+public interface TieredCacheService<K, V> {
 
     V computeIfAbsent(K key, TieredCacheLoader<K, V> loader) throws Exception;
 
@@ -20,5 +28,7 @@ public interface TieredCacheHandler<K, V> {
 
     long count();
 
-    CachingTier<K, V> getOnHeapCachingTier();
+    OnHeapCachingTier<K, V> getOnHeapCachingTier();
+
+    Optional<DiskCachingTier<K, V>> getDiskCachingTier();
 }
