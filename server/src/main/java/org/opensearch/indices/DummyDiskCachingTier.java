@@ -12,7 +12,7 @@ import org.opensearch.common.cache.RemovalListener;
 
 import java.util.Collections;
 
-public class DummyDiskCachingTier<K, V> implements CachingTier<K, V> {
+public class DummyDiskCachingTier<K, V> implements DiskCachingTier<K, V> {
 
     @Override
     public V get(K key) {
@@ -54,5 +54,10 @@ public class DummyDiskCachingTier<K, V> implements CachingTier<K, V> {
     @Override
     public TierType getTierType() {
         return TierType.DISK;
+    }
+
+    @Override
+    public void close() {
+
     }
 }

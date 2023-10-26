@@ -130,10 +130,10 @@ public final class IndicesRequestCache implements TieredCacheEventListener<Indic
 
         int diskTierWeight = 100 * 1048576; // 100 MB, for testing only
         EhcacheDiskCachingTier diskCachingTier;
-        diskCachingTier = new EhcacheDiskCachingTier(diskTierWeight, 0, this, indicesService.getNodeId());
+        //diskCachingTier = new EhcacheDiskCachingTier(diskTierWeight, 0, this, indicesService.getNodeId());
         tieredCacheHandler = new TieredCacheSpilloverStrategyHandler.Builder<Key, BytesReference>().setOnHeapCachingTier(
             openSearchOnHeapCache
-        ).setOnDiskCachingTier(diskCachingTier).setTieredCacheEventListener(this).build();
+        ).setOnDiskCachingTier(new DummyDiskCachingTier<>()).setTieredCacheEventListener(this).build();
         this.indicesService = indicesService;
     }
 
