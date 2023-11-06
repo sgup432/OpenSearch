@@ -42,6 +42,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.core.common.bytes.BytesArray;
 import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.common.io.stream.StreamOutput;
 import org.opensearch.env.Environment;
 import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.IndexModule;
@@ -60,6 +61,7 @@ import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.test.hamcrest.OpenSearchAssertions;
 import org.opensearch.transport.nio.MockNioTransportPlugin;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
@@ -316,6 +318,11 @@ public class IndicesServiceCloseTests extends OpenSearchTestCase {
 
         assertEquals(0L, cache.count());
         IndicesRequestCache.CacheEntity cacheEntity = new IndicesRequestCache.CacheEntity() {
+            @Override
+            public void writeTo(StreamOutput out) throws IOException {
+
+            }
+
             @Override
             public long ramBytesUsed() {
                 return 42;
