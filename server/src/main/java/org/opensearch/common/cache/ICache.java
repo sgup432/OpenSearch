@@ -6,16 +6,16 @@
  * compatible open source license.
  */
 
-package org.opensearch.common.cache.store;
-
-import org.opensearch.common.cache.LoadAwareCacheLoader;
+package org.opensearch.common.cache;
 
 /**
  * Represents a cache interface.
  * @param <K> Type of key.
  * @param <V> Type of value.
+ *
+ * @opensearch.experimental
  */
-public interface Cache<K, V> {
+public interface ICache<K, V> {
     V get(K key);
 
     void put(K key, V value);
@@ -23,8 +23,6 @@ public interface Cache<K, V> {
     V computeIfAbsent(K key, LoadAwareCacheLoader<K, V> loader) throws Exception;
 
     void invalidate(K key);
-
-    V compute(K key, LoadAwareCacheLoader<K, V> loader) throws Exception;
 
     void invalidateAll();
 

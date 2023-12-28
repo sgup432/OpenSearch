@@ -15,8 +15,7 @@ import org.opensearch.common.cache.store.StoreAwareCache;
 import org.opensearch.common.cache.store.StoreAwareCacheRemovalNotification;
 import org.opensearch.common.cache.store.builders.StoreAwareCacheBuilder;
 import org.opensearch.common.cache.store.enums.CacheStoreType;
-import org.opensearch.common.cache.store.listeners.dispatchers.StoreAwareCacheEventListenerDispatcher;
-import org.opensearch.common.cache.store.listeners.dispatchers.StoreAwareCacheListenerDispatcherDefaultImpl;
+import org.opensearch.common.cache.store.listeners.StoreAwareCacheEventListener;
 import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
@@ -90,7 +89,7 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
     // will hold that many file pointers.
     public final Setting<Integer> DISK_SEGMENTS;
 
-    private final StoreAwareCacheEventListenerDispatcher<K, V> eventDispatcher;
+    private final StoreAwareCacheEventListener<K, V> eventListener;
 
     private EhCacheDiskCache(Builder<K, V> builder) {
         this.keyType = Objects.requireNonNull(builder.keyType, "Key type shouldn't be null");
@@ -115,9 +114,9 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
         // Default value is 16 within Ehcache.
         this.DISK_SEGMENTS = Setting.intSetting(builder.settingPrefix + ".ehcache.disk.segments", 16, 1, 32);
         this.cacheManager = buildCacheManager();
-        Objects.requireNonNull(builder.getListenerConfiguration(), "Listener configuration can't be null");
-        this.eventDispatcher = new StoreAwareCacheListenerDispatcherDefaultImpl<>(builder.getListenerConfiguration());
-        this.ehCacheEventListener = new EhCacheEventListener<K, V>(this.eventDispatcher);
+        Objects.requireNonNull(builder.getEventListener(), "Listener can't be null");
+        this.eventListener = builder.getEventListener();
+        this.ehCacheEventListener = new EhCacheEventListener<K, V>(builder.getEventListener());
         this.cache = buildCache(Duration.ofMillis(expireAfterAccess.getMillis()), builder);
     }
 
@@ -190,9 +189,9 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
         // Optimize it by adding key store.
         V value = cache.get(key);
         if (value != null) {
-            eventDispatcher.dispatch(key, value, CacheStoreType.DISK, org.opensearch.common.cache.store.listeners.EventType.ON_HIT);
+            eventListener.onHit(key, value, CacheStoreType.DISK);
         } else {
-            eventDispatcher.dispatch(key, null, CacheStoreType.DISK, org.opensearch.common.cache.store.listeners.EventType.ON_MISS);
+            eventListener.onMiss(key, CacheStoreType.DISK);
         }
         return value;
     }
@@ -212,12 +211,6 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
     public void invalidate(K key) {
         // There seems to be an thread leak issue while calling this and then closing cache.
         cache.remove(key);
-    }
-
-    @Override
-    public V compute(K key, LoadAwareCacheLoader<K, V> loader) throws Exception {
-        // Ehcache doesn't offer any such function. Will have to implement our own if needed later on.
-        throw new UnsupportedOperationException();
     }
 
     @Override
@@ -263,10 +256,10 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
      */
     class EhCacheEventListener<K, V> implements CacheEventListener<K, V> {
 
-        private final StoreAwareCacheEventListenerDispatcher<K, V> eventDispatcher;
+        private final StoreAwareCacheEventListener<K, V> eventListener;
 
-        EhCacheEventListener(StoreAwareCacheEventListenerDispatcher<K, V> eventDispatcher) {
-            this.eventDispatcher = eventDispatcher;
+        EhCacheEventListener(StoreAwareCacheEventListener<K, V> eventListener) {
+            this.eventListener = eventListener;
         }
 
         @Override
@@ -274,16 +267,15 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
             switch (event.getType()) {
                 case CREATED:
                     count.inc();
-                    this.eventDispatcher.dispatch(
+                    this.eventListener.onCached(
                         event.getKey(),
                         event.getNewValue(),
-                        CacheStoreType.DISK,
-                        org.opensearch.common.cache.store.listeners.EventType.ON_CACHED
+                        CacheStoreType.DISK
                     );
                     assert event.getOldValue() == null;
                     break;
                 case EVICTED:
-                    this.eventDispatcher.dispatchRemovalEvent(
+                    this.eventListener.onRemoval(
                         new StoreAwareCacheRemovalNotification<>(
                             event.getKey(),
                             event.getOldValue(),
@@ -296,7 +288,7 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
                     break;
                 case REMOVED:
                     count.dec();
-                    this.eventDispatcher.dispatchRemovalEvent(
+                    this.eventListener.onRemoval(
                         new StoreAwareCacheRemovalNotification<>(
                             event.getKey(),
                             event.getOldValue(),
@@ -307,7 +299,7 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
                     assert event.getNewValue() == null;
                     break;
                 case EXPIRED:
-                    this.eventDispatcher.dispatchRemovalEvent(
+                    this.eventListener.onRemoval(
                         new StoreAwareCacheRemovalNotification<>(
                             event.getKey(),
                             event.getOldValue(),
