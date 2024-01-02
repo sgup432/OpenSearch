@@ -40,6 +40,7 @@ import org.opensearch.action.search.SearchResponse;
 import org.opensearch.action.search.SearchType;
 import org.opensearch.client.Client;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.common.cache.CacheType;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.time.DateFormatter;
 import org.opensearch.common.util.FeatureFlags;
@@ -60,6 +61,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 
+import static org.opensearch.indices.IndicesRequestCache.INDICES_REQUEST_CACHE_TYPE;
 import static org.opensearch.search.SearchService.CLUSTER_CONCURRENT_SEGMENT_SEARCH_SETTING;
 import static org.opensearch.search.aggregations.AggregationBuilders.dateHistogram;
 import static org.opensearch.search.aggregations.AggregationBuilders.dateRange;
@@ -636,6 +638,72 @@ public class IndicesRequestCacheIT extends ParameterizedOpenSearchIntegTestCase 
         }
     }
 
+    public void testWithTieredCache() throws Exception {
+        Settings.Builder settings = Settings.builder().put(IndicesRequestCache.INDEX_CACHE_REQUEST_ENABLED_SETTING.getKey(),
+            true).put(INDICES_REQUEST_CACHE_TYPE.getKey(), CacheType.TIERED.getCacheTypeValue());
+        Client client = client();
+        assertAcked(
+            client.admin()
+                .indices()
+                .prepareCreate("index")
+                .setMapping("f", "type=date")
+                .setSettings(Settings.builder().put(IndicesRequestCache.INDEX_CACHE_REQUEST_ENABLED_SETTING.getKey(), true))
+                .get()
+        );
+        indexRandom(
+            true,
+            client.prepareIndex("index").setSource("f", "2014-03-10T00:00:00.000Z"),
+            client.prepareIndex("index").setSource("f", "2014-05-13T00:00:00.000Z")
+        );
+        ensureSearchable("index");
+
+        // This is not a random example: serialization with time zones writes shared strings
+        // which used to not work well with the query cache because of the handles stream output
+        // see #9500
+        final SearchResponse r1 = client.prepareSearch("index")
+            .setSize(0)
+            .setSearchType(SearchType.QUERY_THEN_FETCH)
+            .addAggregation(
+                dateHistogram("histo").field("f")
+                    .timeZone(ZoneId.of("+01:00"))
+                    .minDocCount(0)
+                    .dateHistogramInterval(DateHistogramInterval.MONTH)
+            )
+            .get();
+        assertSearchResponse(r1);
+
+        // The cached is actually used
+        assertThat(
+            client.admin().indices().prepareStats("index").setRequestCache(true).get().getTotal().getRequestCache().getMemorySizeInBytes(),
+            greaterThan(0L)
+        );
+
+        for (int i = 0; i < 10; ++i) {
+            final SearchResponse r2 = client.prepareSearch("index")
+                .setSize(0)
+                .setSearchType(SearchType.QUERY_THEN_FETCH)
+                .addAggregation(
+                    dateHistogram("histo").field("f")
+                        .timeZone(ZoneId.of("+01:00"))
+                        .minDocCount(0)
+                        .dateHistogramInterval(DateHistogramInterval.MONTH)
+                )
+                .get();
+            assertSearchResponse(r2);
+            Histogram h1 = r1.getAggregations().get("histo");
+            Histogram h2 = r2.getAggregations().get("histo");
+            final List<? extends Bucket> buckets1 = h1.getBuckets();
+            final List<? extends Bucket> buckets2 = h2.getBuckets();
+            assertEquals(buckets1.size(), buckets2.size());
+            for (int j = 0; j < buckets1.size(); ++j) {
+                final Bucket b1 = buckets1.get(j);
+                final Bucket b2 = buckets2.get(j);
+                assertEquals(b1.getKey(), b2.getKey());
+                assertEquals(b1.getDocCount(), b2.getDocCount());
+            }
+        }
+
+    }
     private static void assertCacheState(Client client, String index, long expectedHits, long expectedMisses) {
         RequestCacheStats requestCacheStats = client.admin()
             .indices()

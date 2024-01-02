@@ -396,7 +396,7 @@ public class IndicesService extends AbstractLifecycleComponent
         this.shardsClosedTimeout = settings.getAsTime(INDICES_SHARDS_CLOSED_TIMEOUT, new TimeValue(1, TimeUnit.DAYS));
         this.analysisRegistry = analysisRegistry;
         this.indexNameExpressionResolver = indexNameExpressionResolver;
-        this.indicesRequestCache = new IndicesRequestCache(settings);
+        this.indicesRequestCache = new IndicesRequestCache(settings, this);
         this.indicesQueryCache = new IndicesQueryCache(settings);
         this.mapperRegistry = mapperRegistry;
         this.namedWriteableRegistry = namedWriteableRegistry;
@@ -1715,6 +1715,10 @@ public class IndicesService extends AbstractLifecycleComponent
 
     public ByteSizeValue getTotalIndexingBufferBytes() {
         return indexingMemoryController.indexingBufferSize();
+    }
+
+    public String getIndicesDiskCachePath(String indicesCache) {
+        return nodeEnv.resolveIndicesDiskCachePath(indicesCache).toString();
     }
 
     /**

@@ -18,4 +18,8 @@ public enum CacheType {
     CacheType(String cacheType) {
         this.cacheType = cacheType;
     }
+
+    public String getCacheTypeValue() {
+        return cacheType;
+    }
 }

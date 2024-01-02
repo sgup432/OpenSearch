@@ -17,6 +17,7 @@ import org.opensearch.common.cache.store.StoreAwareCacheValue;
 import org.opensearch.common.cache.store.builders.StoreAwareCacheBuilder;
 import org.opensearch.common.cache.store.enums.CacheStoreType;
 import org.opensearch.common.cache.store.listeners.StoreAwareCacheEventListener;
+import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.concurrent.ReleasableLock;
 import org.opensearch.common.util.iterable.Iterables;
 
@@ -28,6 +29,8 @@ import java.util.Optional;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
+
+import static org.opensearch.common.util.FeatureFlags.INDICES_REQUEST_TIERED_CACHE_ENABLE_SETTING;
 
 /**
  * This cache spillover the evicted items from heap tier to disk tier. All the new items are first cached on heap
@@ -45,6 +48,8 @@ public class TieredSpilloverCache<K, V> implements TieredCache<K, V>, StoreAware
     private final Optional<StoreAwareCache<K, V>> onDiskCache;
     private final StoreAwareCache<K, V> onHeapCache;
     private final StoreAwareCacheEventListener<K, V> listener;
+
+    private final Settings settings;
     ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
     ReleasableLock readLock = new ReleasableLock(readWriteLock.readLock());
     ReleasableLock writeLock = new ReleasableLock(readWriteLock.writeLock());
@@ -63,6 +68,7 @@ public class TieredSpilloverCache<K, V> implements TieredCache<K, V>, StoreAware
             this.onDiskCache = Optional.empty();
         }
         this.listener = builder.listener;
+        this.settings = Objects.requireNonNull(builder.settings, "Settings object shouldn't be null");
         this.cacheList = this.onDiskCache.map(diskTier -> Arrays.asList(this.onHeapCache, diskTier)).orElse(List.of(this.onHeapCache));
     }
 
@@ -214,7 +220,11 @@ public class TieredSpilloverCache<K, V> implements TieredCache<K, V>, StoreAware
             switch (notification.getCacheStoreType()) {
                 case ON_HEAP:
                     try (ReleasableLock ignore = writeLock.acquire()) {
-                        onDiskCache.ifPresent(diskTier -> { diskTier.put(notification.getKey(), notification.getValue()); });
+                        onDiskCache.ifPresent(diskTier -> {
+                            if (INDICES_REQUEST_TIERED_CACHE_ENABLE_SETTING.get(settings)) {
+                                diskTier.put(notification.getKey(), notification.getValue());
+                            }
+                        });
                     }
                     onDiskCache.ifPresent(
                         diskTier -> listener.onCached(notification.getKey(), notification.getValue(), CacheStoreType.DISK)
@@ -267,6 +277,7 @@ public class TieredSpilloverCache<K, V> implements TieredCache<K, V>, StoreAware
         private StoreAwareCacheBuilder<K, V> onHeapCacheBuilder;
         private StoreAwareCacheBuilder<K, V> onDiskCacheBuilder;
         private StoreAwareCacheEventListener<K, V> listener;
+        private Settings settings;
 
         public Builder() {}
 
@@ -282,6 +293,11 @@ public class TieredSpilloverCache<K, V> implements TieredCache<K, V>, StoreAware
 
         public Builder<K, V> setListener(StoreAwareCacheEventListener<K, V> listener) {
             this.listener = listener;
+            return this;
+        }
+
+        public Builder<K, V> setSettings(Settings settings) {
+            this.settings = settings;
             return this;
         }
 

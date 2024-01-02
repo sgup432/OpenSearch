@@ -39,6 +39,7 @@ import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.RamUsageEstimator;
 import org.opensearch.common.CheckedSupplier;
+import org.opensearch.common.cache.CacheType;
 import org.opensearch.common.cache.ICache;
 import org.opensearch.common.cache.LoadAwareCacheLoader;
 import org.opensearch.common.cache.RemovalNotification;
@@ -47,6 +48,8 @@ import org.opensearch.common.cache.store.StoreAwareCacheRemovalNotification;
 import org.opensearch.common.cache.store.builders.StoreAwareCacheBuilder;
 import org.opensearch.common.cache.store.enums.CacheStoreType;
 import org.opensearch.common.cache.store.listeners.StoreAwareCacheEventListener;
+import org.opensearch.common.cache.tier.EhCacheDiskCache;
+import org.opensearch.common.cache.tier.TieredSpilloverCache;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Setting.Property;
@@ -54,6 +57,7 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.ConcurrentCollections;
 import org.opensearch.core.common.bytes.BytesReference;
+import org.opensearch.core.common.unit.ByteSizeUnit;
 import org.opensearch.core.common.unit.ByteSizeValue;
 
 import java.io.Closeable;
@@ -111,13 +115,25 @@ public final class IndicesRequestCache implements StoreAwareCacheEventListener<I
         Property.NodeScope
     );
 
+    public static final Setting<TimeValue> INDICES_REQUEST_CACHE_DISK_TIER_EXPIRE = Setting.positiveTimeSetting(
+        "indices.requests.cache.tier.disk.expire",
+        new TimeValue(0),
+        Property.NodeScope
+    );
+
+    public static final Setting<ByteSizeValue> INDICES_REQUEST_CACHE_DISK_SIZE = Setting.byteSizeSetting(
+        "indices.requests.cache.tier.disk.size",
+        new ByteSizeValue(500, ByteSizeUnit.MB)
+    );
+
+
     private final ConcurrentMap<CleanupKey, Boolean> registeredClosedListeners = ConcurrentCollections.newConcurrentMap();
     private final Set<CleanupKey> keysToClean = ConcurrentCollections.newConcurrentSet();
     private final ByteSizeValue size;
     private final TimeValue expire;
     private final ICache<Key, BytesReference> cache;
 
-    IndicesRequestCache(Settings settings) {
+    IndicesRequestCache(Settings settings, IndicesService indicesService) {
         this.size = INDICES_CACHE_QUERY_SIZE.get(settings);
         this.expire = INDICES_CACHE_QUERY_EXPIRE.exists(settings) ? INDICES_CACHE_QUERY_EXPIRE.get(settings) : null;
         long sizeInBytes = size.getBytes();
@@ -128,36 +144,43 @@ public final class IndicesRequestCache implements StoreAwareCacheEventListener<I
         if (expire != null) {
             openSearchOnHeapCacheBuilder.setExpireAfterAccess(expire);
         }
-        openSearchOnHeapCacheBuilder.setEventListener(this);
-        cache = openSearchOnHeapCacheBuilder.build();
-        // if (cacheTypeInString == null || cacheTypeInString.isBlank()) {
-        // openSearchOnHeapCacheBuilder.setEventListener(this);
-        // cache = openSearchOnHeapCacheBuilder.build();
-        // } else {
-        // CacheType cacheType;
-        // try {
-        // cacheType = CacheType.valueOf(cacheTypeInString);
-        // } catch (IllegalArgumentException ex) {
-        // openSearchOnHeapCacheBuilder.setEventListener(this);
-        // cache = openSearchOnHeapCacheBuilder.build();
-        // return;
-        // }
-        // switch (cacheType) {
-        // case ON_HEAP:
-        // openSearchOnHeapCacheBuilder.setEventListener(this);
-        // cache = openSearchOnHeapCacheBuilder.build();
-        // break;
-        // case TIERED:
-        // cache =
-        // new TieredSpilloverCache.Builder<Key, BytesReference>()
-        // .setOnHeapCacheBuilder(openSearchOnHeapCacheBuilder)
-        // .setListener(this)
-        // .build();
-        // default:
-        // throw new IllegalArgumentException("Unknown cache type");
-        //
-        // }
-        // }
+        if (cacheTypeInString == null || cacheTypeInString.isBlank()) {
+            openSearchOnHeapCacheBuilder.setEventListener(this);
+            cache = openSearchOnHeapCacheBuilder.build();
+        } else {
+            CacheType cacheType;
+            try {
+                cacheType = CacheType.valueOf(cacheTypeInString);
+            } catch (IllegalArgumentException ex) {
+                openSearchOnHeapCacheBuilder.setEventListener(this);
+                cache = openSearchOnHeapCacheBuilder.build();
+                return;
+            }
+            switch (cacheType) {
+                case ON_HEAP:
+                    openSearchOnHeapCacheBuilder.setEventListener(this);
+                    cache = openSearchOnHeapCacheBuilder.build();
+                    break;
+                case TIERED:
+                    StoreAwareCacheBuilder<Key, BytesReference> ehCacheDiskBuilder =
+                        new EhCacheDiskCache.Builder<Key, BytesReference>()
+                            .setDiskCacheAlias("ehCache")
+                            .setKeyType(Key.class)
+                            .setValueType(BytesReference.class)
+                            .setStoragePath(indicesService.getIndicesDiskCachePath("request_cache"))
+                            .setSettings(settings)
+                            .setSettingPrefix("indices.requests.cache.tier")
+                            .setThreadPoolAlias("test")
+                            .setMaximumWeightInBytes(INDICES_REQUEST_CACHE_DISK_SIZE.get(settings).getBytes());
+                    cache = new TieredSpilloverCache.Builder<Key, BytesReference>().setOnHeapCacheBuilder(openSearchOnHeapCacheBuilder)
+                        .setOnDiskCacheBuilder(ehCacheDiskBuilder)
+                        .setListener(this)
+                        .build();
+                default:
+                    throw new IllegalArgumentException("Unknown cache type");
+
+            }
+        }
     }
 
     @Override

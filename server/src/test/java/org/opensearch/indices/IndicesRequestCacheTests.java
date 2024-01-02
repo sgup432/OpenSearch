@@ -58,17 +58,17 @@ import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.core.xcontent.XContentHelper;
 import org.opensearch.index.cache.request.ShardRequestCache;
 import org.opensearch.index.query.TermQueryBuilder;
-import org.opensearch.test.OpenSearchTestCase;
+import org.opensearch.test.OpenSearchSingleNodeTestCase;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-public class IndicesRequestCacheTests extends OpenSearchTestCase {
+public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
 
     public void testBasicOperationsCache() throws Exception {
         ShardRequestCache requestCacheStats = new ShardRequestCache();
-        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY);
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, getInstanceFromNode(IndicesService.class));
         Directory dir = newDirectory();
         IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
 
@@ -122,7 +122,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
     }
 
     public void testCacheDifferentReaders() throws Exception {
-        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY);
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, getInstanceFromNode(IndicesService.class));
         AtomicBoolean indexShard = new AtomicBoolean(true);
         ShardRequestCache requestCacheStats = new ShardRequestCache();
         Directory dir = newDirectory();
@@ -218,7 +218,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
     public void testEviction() throws Exception {
         final ByteSizeValue size;
         {
-            IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY);
+            IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, getInstanceFromNode(IndicesService.class));
             AtomicBoolean indexShard = new AtomicBoolean(true);
             ShardRequestCache requestCacheStats = new ShardRequestCache();
             Directory dir = newDirectory();
@@ -244,7 +244,8 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
             IOUtils.close(reader, secondReader, writer, dir, cache);
         }
         IndicesRequestCache cache = new IndicesRequestCache(
-            Settings.builder().put(IndicesRequestCache.INDICES_CACHE_QUERY_SIZE.getKey(), size.getBytes() + 1 + "b").build()
+            Settings.builder().put(IndicesRequestCache.INDICES_CACHE_QUERY_SIZE.getKey(), size.getBytes() + 1 + "b").build(),
+            getInstanceFromNode(IndicesService.class)
         );
         AtomicBoolean indexShard = new AtomicBoolean(true);
         ShardRequestCache requestCacheStats = new ShardRequestCache();
@@ -281,7 +282,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
     }
 
     public void testClearAllEntityIdentity() throws Exception {
-        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY);
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, getInstanceFromNode(IndicesService.class));
         AtomicBoolean indexShard = new AtomicBoolean(true);
 
         ShardRequestCache requestCacheStats = new ShardRequestCache();
@@ -366,7 +367,7 @@ public class IndicesRequestCacheTests extends OpenSearchTestCase {
 
     public void testInvalidate() throws Exception {
         ShardRequestCache requestCacheStats = new ShardRequestCache();
-        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY);
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, getInstanceFromNode(IndicesService.class));
         Directory dir = newDirectory();
         IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
 

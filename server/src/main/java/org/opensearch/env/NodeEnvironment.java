@@ -127,6 +127,7 @@ public final class NodeEnvironment implements Closeable {
         /** Cached FileStore from path */
         public final FileStore fileStore;
         public final Path fileCachePath;
+        public final Path indicesDiskCachePath;
         /*
           Cache reserved size can default to a different value depending on configuration
         */
@@ -139,6 +140,7 @@ public final class NodeEnvironment implements Closeable {
             this.indicesPath = path.resolve(INDICES_FOLDER);
             this.fileCachePath = path.resolve(CACHE_FOLDER);
             this.fileStore = Environment.getFileStore(path);
+            this.indicesDiskCachePath = this.indicesPath.resolve(CACHE_FOLDER);
             this.fileCacheReservedSize = ByteSizeValue.ZERO;
             if (fileStore.supportsFileAttributeView("lucene")) {
                 this.majorDeviceNumber = (int) fileStore.getAttribute("lucene:major_device_number");
@@ -1298,6 +1300,11 @@ public final class NodeEnvironment implements Closeable {
     private static Path resolveIndexCustomLocation(String customDataPath, String indexUUID, Path sharedDataPath, int nodeLockId) {
         return resolveBaseCustomLocation(customDataPath, sharedDataPath, nodeLockId).resolve(indexUUID);
     }
+
+    public Path resolveIndicesDiskCachePath(String indicesCache) {
+        return this.nodePaths[0].indicesDiskCachePath.resolve(indicesCache);
+    }
+
 
     /**
      * Resolve the file cache path for remote shards.

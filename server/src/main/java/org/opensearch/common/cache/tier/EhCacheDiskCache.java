@@ -107,12 +107,12 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
         }
         this.settings = Objects.requireNonNull(builder.settings, "Settings objects shouldn't be null");
         Objects.requireNonNull(builder.settingPrefix, "Setting prefix shouldn't be null");
-        this.DISK_WRITE_MINIMUM_THREADS = Setting.intSetting(builder.settingPrefix + ".tiered.disk.ehcache.min_threads", 2, 1, 5);
-        this.DISK_WRITE_MAXIMUM_THREADS = Setting.intSetting(builder.settingPrefix + ".tiered.disk.ehcache.max_threads", 2, 1, 20);
+        this.DISK_WRITE_MINIMUM_THREADS = Setting.intSetting(builder.settingPrefix + ".tier.disk.ehcache.min_threads", 2, 1, 5);
+        this.DISK_WRITE_MAXIMUM_THREADS = Setting.intSetting(builder.settingPrefix + ".tier.disk.ehcache.max_threads", 2, 1, 20);
         // Default value is 1 within EhCache.
-        this.DISK_WRITE_CONCURRENCY = Setting.intSetting(builder.settingPrefix + ".tiered.disk.ehcache.concurrency", 2, 1, 3);
+        this.DISK_WRITE_CONCURRENCY = Setting.intSetting(builder.settingPrefix + ".tier.disk.ehcache.concurrency", 2, 1, 3);
         // Default value is 16 within Ehcache.
-        this.DISK_SEGMENTS = Setting.intSetting(builder.settingPrefix + ".ehcache.disk.segments", 16, 1, 32);
+        this.DISK_SEGMENTS = Setting.intSetting(builder.settingPrefix + "tier.disk.ehcache.segments", 16, 1, 32);
         this.cacheManager = buildCacheManager();
         Objects.requireNonNull(builder.getEventListener(), "Listener can't be null");
         this.eventListener = builder.getEventListener();
@@ -267,11 +267,7 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
             switch (event.getType()) {
                 case CREATED:
                     count.inc();
-                    this.eventListener.onCached(
-                        event.getKey(),
-                        event.getNewValue(),
-                        CacheStoreType.DISK
-                    );
+                    this.eventListener.onCached(event.getKey(), event.getNewValue(), CacheStoreType.DISK);
                     assert event.getOldValue() == null;
                     break;
                 case EVICTED:

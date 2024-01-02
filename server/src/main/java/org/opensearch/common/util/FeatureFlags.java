@@ -117,6 +117,18 @@ public class FeatureFlags {
         Property.NodeScope
     );
 
+    public static final Setting<String> INDICES_REQUEST_CACHE_TYPE = Setting.simpleString(
+        "indices.requests.cache" + ".type",
+        Property.NodeScope
+    );
+
+    public static final Setting<Boolean> INDICES_REQUEST_TIERED_CACHE_ENABLE_SETTING = Setting.boolSetting(
+      "indices.requests.cache.tiered.enabled",
+        false,
+        Property.Dynamic,
+        Property.NodeScope
+    );
+
     public static final Setting<Boolean> DATETIME_FORMATTER_CACHING_SETTING = Setting.boolSetting(
         DATETIME_FORMATTER_CACHING,
         true,
