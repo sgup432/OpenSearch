@@ -11,7 +11,6 @@ package org.opensearch.common.cache.tier;
 import org.opensearch.common.cache.store.StoreAwareCache;
 import org.opensearch.common.cache.store.StoreAwareCacheRemovalNotification;
 import org.opensearch.common.cache.store.enums.CacheStoreType;
-import org.opensearch.common.cache.store.listeners.EventType;
 import org.opensearch.common.cache.store.listeners.StoreAwareCacheEventListener;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
@@ -234,6 +233,14 @@ public class EhCacheDiskCacheTests extends OpenSearchSingleNodeTestCase {
         }
 
         return randomString.toString();
+    }
+
+    // TODO: Remove this from here in final PR.
+    enum EventType {
+        ON_HIT,
+        ON_MISS,
+        ON_CACHED,
+        ON_REMOVAL;
     }
 
     class MockEventListener<K, V> implements StoreAwareCacheEventListener<K, V> {

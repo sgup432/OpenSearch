@@ -267,11 +267,7 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
             switch (event.getType()) {
                 case CREATED:
                     count.inc();
-                    this.eventListener.onCached(
-                        event.getKey(),
-                        event.getNewValue(),
-                        CacheStoreType.DISK
-                    );
+                    this.eventListener.onCached(event.getKey(), event.getNewValue(), CacheStoreType.DISK);
                     assert event.getOldValue() == null;
                     break;
                 case EVICTED:
