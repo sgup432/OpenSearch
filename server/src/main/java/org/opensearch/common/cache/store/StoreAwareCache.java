@@ -20,6 +20,4 @@ import org.opensearch.common.cache.store.enums.CacheStoreType;
  */
 public interface StoreAwareCache<K, V> extends ICache<K, V> {
     CacheStoreType getTierType();
-
-    void close();
 }
