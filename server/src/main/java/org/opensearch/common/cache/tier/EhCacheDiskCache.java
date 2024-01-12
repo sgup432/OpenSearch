@@ -8,14 +8,20 @@
 
 package org.opensearch.common.cache.tier;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.ehcache.spi.loaderwriter.CacheLoadingException;
+import org.ehcache.spi.loaderwriter.CacheWritingException;
 import org.opensearch.OpenSearchException;
 import org.opensearch.common.cache.LoadAwareCacheLoader;
 import org.opensearch.common.cache.RemovalReason;
+import org.opensearch.common.cache.stats.CacheStats;
 import org.opensearch.common.cache.store.StoreAwareCache;
 import org.opensearch.common.cache.store.StoreAwareCacheRemovalNotification;
 import org.opensearch.common.cache.store.builders.StoreAwareCacheBuilder;
 import org.opensearch.common.cache.store.enums.CacheStoreType;
 import org.opensearch.common.cache.store.listeners.StoreAwareCacheEventListener;
+import org.opensearch.common.collect.Tuple;
 import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
@@ -24,8 +30,15 @@ import org.opensearch.common.unit.TimeValue;
 import java.io.File;
 import java.time.Duration;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.BiFunction;
 import java.util.function.Supplier;
 
 import org.ehcache.Cache;
@@ -42,8 +55,19 @@ import org.ehcache.event.CacheEventListener;
 import org.ehcache.event.EventType;
 import org.ehcache.expiry.ExpiryPolicy;
 import org.ehcache.impl.config.store.disk.OffHeapDiskStoreConfiguration;
+import org.opensearch.common.util.concurrent.ReleasableLock;
 
+/**
+ * This variant of disk cache uses Ehcache underneath.
+ *  @param <K> Type of key.
+ *  @param <V> Type of value.
+ *
+ *  @opensearch.experimental
+ *
+ */
 public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
+
+    private static final Logger logger = LogManager.getLogger(EhCacheDiskCache.class);
 
     // A Cache manager can create many caches.
     private final PersistentCacheManager cacheManager;
@@ -59,13 +83,13 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
 
     private final TimeValue expireAfterAccess;
 
+    private final DiskCacheStats stats = new DiskCacheStats();
+
     private final EhCacheEventListener<K, V> ehCacheEventListener;
 
     private final String threadPoolAlias;
 
     private final Settings settings;
-
-    private CounterMetric count = new CounterMetric();
 
     private final static String DISK_CACHE_ALIAS = "ehDiskCache";
 
@@ -86,10 +110,16 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
     public final Setting<Integer> DISK_WRITE_CONCURRENCY;
 
     // Defines how many segments the disk cache is separated into. Higher number achieves greater concurrency but
-    // will hold that many file pointers.
+    // will hold that many file pointers. Default is 16.
     public final Setting<Integer> DISK_SEGMENTS;
 
     private final StoreAwareCacheEventListener<K, V> eventListener;
+
+    /**
+     * Used in computeIfAbsent to synchronize loading of a given key. This is needed as ehcache doesn't provide a
+     * computeIfAbsent method.
+     */
+    Map<K, CompletableFuture<Tuple<K, V>>> completableFutureMap = new ConcurrentHashMap<>();
 
     private EhCacheDiskCache(Builder<K, V> builder) {
         this.keyType = Objects.requireNonNull(builder.keyType, "Key type shouldn't be null");
@@ -107,12 +137,12 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
         }
         this.settings = Objects.requireNonNull(builder.settings, "Settings objects shouldn't be null");
         Objects.requireNonNull(builder.settingPrefix, "Setting prefix shouldn't be null");
-        this.DISK_WRITE_MINIMUM_THREADS = Setting.intSetting(builder.settingPrefix + ".tiered.disk.ehcache.min_threads", 2, 1, 5);
-        this.DISK_WRITE_MAXIMUM_THREADS = Setting.intSetting(builder.settingPrefix + ".tiered.disk.ehcache.max_threads", 2, 1, 20);
+        this.DISK_WRITE_MINIMUM_THREADS = Setting.intSetting(builder.settingPrefix + ".tier.disk.ehcache.min_threads", 2, 1, 5);
+        this.DISK_WRITE_MAXIMUM_THREADS = Setting.intSetting(builder.settingPrefix + ".tier.disk.ehcache.max_threads", 2, 1, 20);
         // Default value is 1 within EhCache.
-        this.DISK_WRITE_CONCURRENCY = Setting.intSetting(builder.settingPrefix + ".tiered.disk.ehcache.concurrency", 2, 1, 3);
+        this.DISK_WRITE_CONCURRENCY = Setting.intSetting(builder.settingPrefix + ".tier.disk.ehcache.concurrency", 2, 1, 3);
         // Default value is 16 within Ehcache.
-        this.DISK_SEGMENTS = Setting.intSetting(builder.settingPrefix + ".ehcache.disk.segments", 16, 1, 32);
+        this.DISK_SEGMENTS = Setting.intSetting(builder.settingPrefix + "tier.disk.ehcache.segments", 16, 1, 32);
         this.cacheManager = buildCacheManager();
         Objects.requireNonNull(builder.getEventListener(), "Listener can't be null");
         this.eventListener = builder.getEventListener();
@@ -138,25 +168,25 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
         return this.cacheManager.createCache(
             DISK_CACHE_ALIAS,
             CacheConfigurationBuilder.newCacheConfigurationBuilder(
-                this.keyType,
-                this.valueType,
-                ResourcePoolsBuilder.newResourcePoolsBuilder().disk(maxWeightInBytes, MemoryUnit.B)
-            ).withExpiry(new ExpiryPolicy<K, V>() {
-                @Override
-                public Duration getExpiryForCreation(K key, V value) {
-                    return INFINITE;
-                }
+                    this.keyType,
+                    this.valueType,
+                    ResourcePoolsBuilder.newResourcePoolsBuilder().disk(maxWeightInBytes, MemoryUnit.B)
+                ).withExpiry(new ExpiryPolicy<>() {
+                    @Override
+                    public Duration getExpiryForCreation(K key, V value) {
+                        return INFINITE;
+                    }
 
-                @Override
-                public Duration getExpiryForAccess(K key, Supplier<? extends V> value) {
-                    return expireAfterAccess;
-                }
+                    @Override
+                    public Duration getExpiryForAccess(K key, Supplier<? extends V> value) {
+                        return expireAfterAccess;
+                    }
 
-                @Override
-                public Duration getExpiryForUpdate(K key, Supplier<? extends V> oldValue, V newValue) {
-                    return INFINITE;
-                }
-            })
+                    @Override
+                    public Duration getExpiryForUpdate(K key, Supplier<? extends V> oldValue, V newValue) {
+                        return INFINITE;
+                    }
+                })
                 .withService(getListenerConfiguration(builder))
                 .withService(
                     new OffHeapDiskStoreConfiguration(
@@ -184,10 +214,23 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
         }
     }
 
+    // Package private for testing
+    Map<K, CompletableFuture<Tuple<K, V>>> getCompletableFutureMap() {
+        return completableFutureMap;
+    }
+
     @Override
     public V get(K key) {
+        if (key == null) {
+            throw new IllegalArgumentException("Key passed to ehcache disk cache was null.");
+        }
         // Optimize it by adding key store.
-        V value = cache.get(key);
+        V value;
+        try {
+            value = cache.get(key);
+        } catch (CacheLoadingException ex) {
+            throw new OpenSearchException("Exception occurred while trying to fetch item from ehcache disk cache");
+        }
         if (value != null) {
             eventListener.onHit(key, value, CacheStoreType.DISK);
         } else {
@@ -198,19 +241,93 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
 
     @Override
     public void put(K key, V value) {
-        cache.put(key, value);
+        try {
+            cache.put(key, value);
+        } catch (CacheWritingException ex) {
+            throw new OpenSearchException("Exception occurred while put item to ehcache disk cache");
+        }
     }
 
     @Override
     public V computeIfAbsent(K key, LoadAwareCacheLoader<K, V> loader) throws Exception {
-        // Ehcache doesn't offer any such function. Will have to implement our own if needed later on.
-        throw new UnsupportedOperationException();
+        // Ehache doesn't provide any computeIfAbsent function. Exposes putIfAbsent but that works differently and is
+        // not performant in case there are multiple concurrent request for same key. Below is our own custom
+        // implementation of computeIfAbsent on top of ehcache. Inspired by OpenSearch Cache implementation.
+        V value = get(key);
+        if (value == null) {
+            value = compute(key, loader);
+        }
+        if (!loader.isLoaded()) {
+            eventListener.onHit(key, value, CacheStoreType.DISK);
+        } else {
+            eventListener.onMiss(key, CacheStoreType.DISK);
+            eventListener.onCached(key, value, CacheStoreType.DISK);
+        }
+        return value;
+    }
+
+    private V compute(K key, LoadAwareCacheLoader<K, V> loader) throws Exception {
+        // A future that returns a pair of key/value.
+        CompletableFuture<Tuple<K, V>> completableFuture = new CompletableFuture<>();
+        // Only one of the threads will succeed putting a future into map for the same key.
+        // Rest will fetch existing future.
+        CompletableFuture<Tuple<K, V>> future = completableFutureMap.putIfAbsent(key, completableFuture);
+        // Handler to handle results post processing. Takes a tuple<key, value> or exception as an input and returns
+        // the value. Also before returning value, puts the value in cache.
+        BiFunction<Tuple<K, V>, Throwable, V> handler = (pair, ex) -> {
+            V value = null;
+            if (pair != null) {
+                put(pair.v1(), pair.v2());
+                value = pair.v2(); // Returning a value itself assuming that a next get should return the same. Should
+                // be safe to assume if we got no exception and reached here.
+            }
+            completableFutureMap.remove(key); // Remove key from map as not needed anymore.
+            return value;
+        };
+        CompletableFuture<V> completableValue;
+        if (future == null) {
+            future = completableFuture;
+            completableValue = future.handle(handler);
+            V value;
+            try {
+                value = loader.load(key);
+            } catch (Exception ex) {
+                future.completeExceptionally(ex);
+                throw new ExecutionException(ex);
+            }
+            if (value == null) {
+                NullPointerException npe = new NullPointerException("loader returned a null value");
+                future.completeExceptionally(npe);
+                throw new ExecutionException(npe);
+            } else {
+                future.complete(new Tuple<>(key, value));
+            }
+
+        } else {
+            completableValue = future.handle(handler);
+        }
+        V value;
+        try {
+            value = completableValue.get();
+            if (future.isCompletedExceptionally()) {
+                future.get(); // call get to force the exception to be thrown for other concurrent callers
+                throw new IllegalStateException("Future completed exceptionally but no error thrown");
+            }
+        } catch (InterruptedException ex) {
+            throw new IllegalStateException(ex);
+        }
+        return value;
     }
 
     @Override
     public void invalidate(K key) {
         // There seems to be an thread leak issue while calling this and then closing cache.
-        cache.remove(key);
+        try {
+            cache.remove(key);
+        } catch (CacheWritingException ex) {
+            // Handle
+            throw new RuntimeException(ex);
+        }
     }
 
     @Override
@@ -225,12 +342,12 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
 
     @Override
     public long count() {
-        return count.count();
+        return stats.count();
     }
 
     @Override
     public void refresh() {
-        // TODO
+        // TODO: ehcache doesn't provide a way to refresh a cache.
     }
 
     @Override
@@ -246,6 +363,23 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
             cacheManager.destroyCache(DISK_CACHE_ALIAS);
         } catch (CachePersistenceException e) {
             throw new OpenSearchException("Exception occurred while destroying ehcache and associated data", e);
+        }
+    }
+
+    @Override
+    public CacheStats stats() {
+        return stats;
+    }
+
+    /**
+     * Stats related to disk cache.
+     */
+    class DiskCacheStats implements CacheStats {
+        private CounterMetric count = new CounterMetric();
+
+        @Override
+        public long count() {
+            return count.count();
         }
     }
 
@@ -266,7 +400,7 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
         public void onEvent(CacheEvent<? extends K, ? extends V> event) {
             switch (event.getType()) {
                 case CREATED:
-                    count.inc();
+                    stats.count.inc();
                     this.eventListener.onCached(event.getKey(), event.getNewValue(), CacheStoreType.DISK);
                     assert event.getOldValue() == null;
                     break;
@@ -279,11 +413,11 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
                             CacheStoreType.DISK
                         )
                     );
-                    count.dec();
+                    stats.count.dec();
                     assert event.getNewValue() == null;
                     break;
                 case REMOVED:
-                    count.dec();
+                    stats.count.dec();
                     this.eventListener.onRemoval(
                         new StoreAwareCacheRemovalNotification<>(
                             event.getKey(),
@@ -303,7 +437,7 @@ public class EhCacheDiskCache<K, V> implements StoreAwareCache<K, V> {
                             CacheStoreType.DISK
                         )
                     );
-                    count.dec();
+                    stats.count.dec();
                     assert event.getNewValue() == null;
                     break;
                 case UPDATED:
