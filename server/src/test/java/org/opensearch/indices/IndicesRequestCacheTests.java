@@ -32,6 +32,7 @@
 
 package org.opensearch.indices;
 
+import com.carrotsearch.randomizedtesting.annotations.ThreadLeakScope;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.StringField;
@@ -44,7 +45,13 @@ import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
+import org.apache.lucene.util.Accountable;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.RamUsageEstimator;
+import org.opensearch.action.admin.cluster.node.stats.NodeStats;
+import org.opensearch.action.admin.cluster.node.stats.NodesStatsResponse;
+import org.opensearch.client.Client;
+import org.opensearch.cluster.metadata.IndexMetadata;
 import org.opensearch.common.CheckedSupplier;
 import org.opensearch.common.cache.RemovalNotification;
 import org.opensearch.common.cache.RemovalReason;
@@ -52,6 +59,7 @@ import org.opensearch.common.cache.module.CacheModule;
 import org.opensearch.common.cache.service.CacheService;
 import org.opensearch.common.io.stream.BytesStreamOutput;
 import org.opensearch.common.lucene.index.OpenSearchDirectoryReader;
+import org.opensearch.common.metrics.CounterMetric;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.util.FeatureFlags;
 import org.opensearch.common.util.io.IOUtils;
@@ -59,6 +67,7 @@ import org.opensearch.core.common.bytes.AbstractBytesReference;
 import org.opensearch.core.common.bytes.BytesReference;
 import org.opensearch.core.common.io.stream.StreamInput;
 import org.opensearch.core.common.unit.ByteSizeValue;
+import org.opensearch.core.index.Index;
 import org.opensearch.core.index.shard.ShardId;
 import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.core.xcontent.XContentHelper;
@@ -69,6 +78,7 @@ import org.opensearch.index.cache.request.ShardRequestCache;
 import org.opensearch.index.query.TermQueryBuilder;
 import org.opensearch.index.shard.IndexShard;
 import org.opensearch.index.shard.IndexShardState;
+import org.opensearch.indices.cluster.IndicesClusterStateService;
 import org.opensearch.node.Node;
 import org.opensearch.test.OpenSearchSingleNodeTestCase;
 import org.opensearch.threadpool.ThreadPool;
@@ -76,14 +86,31 @@ import org.opensearch.threadpool.ThreadPool;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Phaser;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.opensearch.indices.IndicesRequestCache.INDICES_REQUEST_CACHE_STALENESS_THRESHOLD_SETTING;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+@ThreadLeakScope(ThreadLeakScope.Scope.NONE)
 public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
     private ThreadPool getThreadPool() {
         return new ThreadPool(Settings.builder().put(Node.NODE_NAME_SETTING.getKey(), "default tracer tests").build());
@@ -472,7 +499,8 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
 
     public void testStaleCount_OnRemovalNotificationOfStaleKey_DecrementsStaleCount() throws Exception {
         IndicesService indicesService = getInstanceFromNode(IndicesService.class);
-        IndexShard indexShard = createIndex("test").getShard(0);
+        IndexShard indexShard = createIndex("test", Settings.builder().put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+            .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()).getShard(0);
         ThreadPool threadPool = getThreadPool();
         Settings settings = Settings.builder().put(INDICES_REQUEST_CACHE_STALENESS_THRESHOLD_SETTING.getKey(), "0.51").build();
         IndicesRequestCache cache = new IndicesRequestCache(settings, (shardId -> {
@@ -517,6 +545,10 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
         cache.getOrCompute(secondEntity, loader, secondReader, termBytes);
         assertEquals(2, cache.count());
 
+        RequestCacheStats stats = indexShard.requestCache().stats();
+        System.out.println("memory 1 = " + stats.getMemorySizeInBytes());
+        System.out.println("misses = " + stats.getMissCount());
+
         // Close the reader, to be enqueued for cleanup
         reader.close();
         AtomicInteger staleKeysCount = cache.cacheCleanupManager.getStaleKeysCount();
@@ -524,6 +556,9 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
         assertEquals(1, staleKeysCount.get());
         // cache count should not be affected
         assertEquals(2, cache.count());
+        indexShard.requestCache().stats();
+        System.out.println("memory 2 = " + stats.getMemorySizeInBytes());
+        System.out.println("misses = " + stats.getMissCount());
 
         OpenSearchDirectoryReader.DelegatingCacheHelper delegatingCacheHelper =
             (OpenSearchDirectoryReader.DelegatingCacheHelper) secondReader.getReaderCacheHelper();
@@ -533,88 +568,128 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
             termBytes,
             readerCacheKeyId
         );
-
-        cache.onRemoval(new RemovalNotification<IndicesRequestCache.Key, BytesReference>(key, termBytes, RemovalReason.EVICTED));
+        cache.invalidate(secondEntity, secondReader, termBytes);
+//        cache.onRemoval(new RemovalNotification<IndicesRequestCache.Key, BytesReference>(key, termBytes, RemovalReason.EVICTED));
         staleKeysCount = cache.cacheCleanupManager.getStaleKeysCount();
         // eviction of previous stale key from the cache should decrement staleKeysCount in iRC
         assertEquals(0, staleKeysCount.get());
+        stats = indexShard.requestCache().stats();
+        System.out.println("memory 3 = " + stats.getMemorySizeInBytes());
+        System.out.println("misses = " + stats.getMissCount() + "  count = " + cache.count());
 
         IOUtils.close(secondReader, writer, dir, cache);
         terminate(threadPool);
     }
 
-    public void testStaleCount_OnRemovalNotificationOfStaleKey_DoesNotDecrementsStaleCount() throws Exception {
-        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
-        IndexShard indexShard = createIndex("test").getShard(0);
-        ThreadPool threadPool = getThreadPool();
-        Settings settings = Settings.builder().put(INDICES_REQUEST_CACHE_STALENESS_THRESHOLD_SETTING.getKey(), "0.51").build();
-        IndicesRequestCache cache = new IndicesRequestCache(settings, (shardId -> {
-            IndexService indexService = null;
-            try {
-                indexService = indicesService.indexServiceSafe(shardId.getIndex());
-            } catch (IndexNotFoundException ex) {
-                return Optional.empty();
-            }
-            return Optional.of(new IndicesService.IndexShardCacheEntity(indexService.getShard(shardId.id())));
-        }), new CacheModule(new ArrayList<>(), settings).getCacheService(), threadPool);
-        Directory dir = newDirectory();
-        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
-
-        writer.addDocument(newDoc(0, "foo"));
-        DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
+    public void testKeySizeWithSameValues() throws IOException {
+        ShardId shardId = new ShardId(new Index("test", "id"), 0);
         TermQueryBuilder termQuery = new TermQueryBuilder("id", "0");
         BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
-        if (randomBoolean()) {
-            writer.flush();
-            IOUtils.close(writer);
-            writer = new IndexWriter(dir, newIndexWriterConfig());
-        }
-        writer.updateDocument(new Term("id", "0"), newDoc(0, "bar"));
-        DirectoryReader secondReader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
+        String readerCacheKeyId = UUID.randomUUID().toString();
+        IndicesRequestCache.Key key = new IndicesRequestCache.Key(shardId, termBytes, readerCacheKeyId);
 
-        // Get 2 entries into the cache
-        IndicesService.IndexShardCacheEntity entity = new IndicesService.IndexShardCacheEntity(indexShard);
-        Loader loader = new Loader(reader, 0);
-        cache.getOrCompute(entity, loader, reader, termBytes);
+        IndicesRequestCache.Key key1 = new IndicesRequestCache.Key(shardId, termBytes, readerCacheKeyId);
 
-        entity = new IndicesService.IndexShardCacheEntity(indexShard);
-        loader = new Loader(reader, 0);
-        cache.getOrCompute(entity, loader, reader, termBytes);
+        IndicesRequestCache.Key key2 = new IndicesRequestCache.Key(shardId, termBytes, readerCacheKeyId);
 
-        IndicesService.IndexShardCacheEntity secondEntity = new IndicesService.IndexShardCacheEntity(indexShard);
-        loader = new Loader(secondReader, 0);
-        cache.getOrCompute(entity, loader, secondReader, termBytes);
-
-        secondEntity = new IndicesService.IndexShardCacheEntity(indexShard);
-        loader = new Loader(secondReader, 0);
-        cache.getOrCompute(secondEntity, loader, secondReader, termBytes);
-        assertEquals(2, cache.count());
-
-        // Close the reader, to be enqueued for cleanup
-        reader.close();
-        AtomicInteger staleKeysCount = cache.cacheCleanupManager.getStaleKeysCount();
-        // 1 out of 2 keys ie 50% are now stale.
-        assertEquals(1, staleKeysCount.get());
-        // cache count should not be affected
-        assertEquals(2, cache.count());
-
-        OpenSearchDirectoryReader.DelegatingCacheHelper delegatingCacheHelper = (OpenSearchDirectoryReader.DelegatingCacheHelper) reader
-            .getReaderCacheHelper();
-        String readerCacheKeyId = delegatingCacheHelper.getDelegatingCacheKey().getId();
-        IndicesRequestCache.Key key = new IndicesRequestCache.Key(
-            ((IndexShard) secondEntity.getCacheIdentity()).shardId(),
-            termBytes,
-            readerCacheKeyId
-        );
-
-        cache.onRemoval(new RemovalNotification<IndicesRequestCache.Key, BytesReference>(key, termBytes, RemovalReason.EVICTED));
-        staleKeysCount = cache.cacheCleanupManager.getStaleKeysCount();
-        // eviction of NON-stale key from the cache should NOT decrement staleKeysCount in iRC
-        assertEquals(1, staleKeysCount.get());
-
-        IOUtils.close(secondReader, writer, dir, cache);
-        terminate(threadPool);
+        System.out.println("key size = " + key.ramBytesUsed());
+        System.out.println("key1 size = " + key1.ramBytesUsed());
+        System.out.println("key2 size = " + key2.ramBytesUsed());
+        //new IndexShardCacheEntity(context.indexShard()), directoryReader, request.cacheKey()
     }
+
+//    static class Key implements Accountable {
+//        private static final long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(Key.class);
+//
+//        public final IndicesRequestCache.CacheEntity entity; // use as identity equality
+//        public final IndexReader.CacheKey readerCacheKey;
+//        public final BytesReference value;
+//
+//        Key(IndicesRequestCache.CacheEntity entity, IndexReader.CacheKey readerCacheKey, BytesReference value) {
+//            this.entity = entity;
+//            this.readerCacheKey = Objects.requireNonNull(readerCacheKey);
+//            this.value = value;
+//        }
+//
+//        @Override
+//        public long ramBytesUsed() {
+//            return BASE_RAM_BYTES_USED + entity.ramBytesUsed() + value.length();
+//        }
+//
+//    }
+
+//    public void testStaleCount_OnRemovalNotificationOfStaleKey_DoesNotDecrementsStaleCount() throws Exception {
+//        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
+//        IndexShard indexShard = createIndex("test").getShard(0);
+//        ThreadPool threadPool = getThreadPool();
+//        Settings settings = Settings.builder().put(INDICES_REQUEST_CACHE_STALENESS_THRESHOLD_SETTING.getKey(), "0.51").build();
+//        IndicesRequestCache cache = new IndicesRequestCache(settings, (shardId -> {
+//            IndexService indexService = null;
+//            try {
+//                indexService = indicesService.indexServiceSafe(shardId.getIndex());
+//            } catch (IndexNotFoundException ex) {
+//                return Optional.empty();
+//            }
+//            return Optional.of(new IndicesService.IndexShardCacheEntity(indexService.getShard(shardId.id())));
+//        }), new CacheModule(new ArrayList<>(), settings).getCacheService(), threadPool);
+//        Directory dir = newDirectory();
+//        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+//
+//        writer.addDocument(newDoc(0, "foo"));
+//        DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
+//        TermQueryBuilder termQuery = new TermQueryBuilder("id", "0");
+//        BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+//        if (randomBoolean()) {
+//            writer.flush();
+//            IOUtils.close(writer);
+//            writer = new IndexWriter(dir, newIndexWriterConfig());
+//        }
+//        writer.updateDocument(new Term("id", "0"), newDoc(0, "bar"));
+//        DirectoryReader secondReader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), new ShardId("foo", "bar", 1));
+//
+//        // Get 2 entries into the cache
+//        IndicesService.IndexShardCacheEntity entity = new IndicesService.IndexShardCacheEntity(indexShard);
+//        Loader loader = new Loader(reader, 0);
+//        cache.getOrCompute(entity, loader, reader, termBytes);
+//
+//        entity = new IndicesService.IndexShardCacheEntity(indexShard);
+//        loader = new Loader(reader, 0);
+//        cache.getOrCompute(entity, loader, reader, termBytes);
+//
+//        IndicesService.IndexShardCacheEntity secondEntity = new IndicesService.IndexShardCacheEntity(indexShard);
+//        loader = new Loader(secondReader, 0);
+//        cache.getOrCompute(entity, loader, secondReader, termBytes);
+//
+//        secondEntity = new IndicesService.IndexShardCacheEntity(indexShard);
+//        loader = new Loader(secondReader, 0);
+//        cache.getOrCompute(secondEntity, loader, secondReader, termBytes);
+//        assertEquals(2, cache.count());
+//
+//        // Close the reader, to be enqueued for cleanup
+//        reader.close();
+//        AtomicInteger staleKeysCount = cache.cacheCleanupManager.getStaleKeysCount();
+//        // 1 out of 2 keys ie 50% are now stale.
+//        assertEquals(1, staleKeysCount.get());
+//        // cache count should not be affected
+//        assertEquals(2, cache.count());
+//
+//        OpenSearchDirectoryReader.DelegatingCacheHelper delegatingCacheHelper = (OpenSearchDirectoryReader.DelegatingCacheHelper) reader
+//            .getReaderCacheHelper();
+//        String readerCacheKeyId = delegatingCacheHelper.getDelegatingCacheKey().getId();
+//        IndicesRequestCache.Key key = new IndicesRequestCache.Key(
+//            ((IndexShard) secondEntity.getCacheIdentity()).shardId(),
+//            termBytes,
+//            readerCacheKeyId
+//        );
+//
+//        cache.onRemoval(new RemovalNotification<IndicesRequestCache.Key, BytesReference>(key, termBytes, RemovalReason.EVICTED));
+//        staleKeysCount = cache.cacheCleanupManager.getStaleKeysCount();
+//        // eviction of NON-stale key from the cache should NOT decrement staleKeysCount in iRC
+//        assertEquals(1, staleKeysCount.get());
+//
+//        IOUtils.close(secondReader, writer, dir, cache);
+//        terminate(threadPool);
+//    }
 
     public void testCacheCleanupBasedOnStaleThreshold_StalenessGreaterThanThreshold() throws Exception {
         IndicesService indicesService = getInstanceFromNode(IndicesService.class);
@@ -1044,6 +1119,937 @@ public class IndicesRequestCacheTests extends OpenSearchSingleNodeTestCase {
         assertEquals(termBytes, key2.value);
 
     }
+
+    public void testConcurrentIndexingAndRefresh() throws Exception {
+        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
+        String index1 = "test1";
+        String index2 = "test2";
+        IndexShard indexShard = createIndex(index1, Settings.builder()
+            .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+            .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()).getShard(0);
+        IndexShard indexShard1 = createIndex(index2, Settings.builder()
+            .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+            .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()).getShard(0);
+        ThreadPool threadPool = getThreadPool();
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, (shardId -> {
+            IndexService indexService = indicesService.indices.get(shardId.getIndex().getUUID());
+            if (indexService == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new IndicesService.IndexShardCacheEntity(indexService.getShard(shardId.id())));
+        }), new CacheModule(new ArrayList<>(), Settings.EMPTY).getCacheService(), threadPool);
+        Directory dir = newDirectory();
+        Directory dir1 = newDirectory();
+        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+        IndexWriter writer1 = new IndexWriter(dir1, newIndexWriterConfig());
+
+
+//        List<String> values = new ArrayList<>();
+//        List<String>
+//        for (int i = 0; i < 1000; i++) {
+//
+//        }
+        writer.addDocument(newDoc(0, "foo"));
+        writer1.addDocument(newDoc(0, "foo"));
+        DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), indexShard.shardId());
+        DirectoryReader reader1 = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer1), indexShard1.shardId());
+
+        IndicesService.IndexShardCacheEntity entity = new IndicesService.IndexShardCacheEntity(indexShard);
+        IndicesService.IndexShardCacheEntity entity1 = new IndicesService.IndexShardCacheEntity(indexShard1);
+
+        int numberOfThreads = 5;
+        Thread[] threads = new Thread[numberOfThreads];
+        Map<IndexShard, List<BytesReference>> serializedTermQueriesMap = new ConcurrentHashMap<>();
+        Map<IndexShard, BytesReference> valueListMap = new ConcurrentHashMap<>();
+        Map<IndexShard, DirectoryReader> readerMap = new ConcurrentHashMap<>();
+        Map<IndexShard, IndicesService.IndexShardCacheEntity> map = new HashMap<>();
+        map.put(indexShard, entity);
+        map.put(indexShard1, entity1);
+        readerMap.put(indexShard, reader);
+        readerMap.put(indexShard1, reader1);
+
+        ExecutorService executor = Executors.newFixedThreadPool(numberOfThreads);
+
+        List<IndexShard> indexShardList = List.of(indexShard, indexShard1);
+        CountDownLatch count = new CountDownLatch(numberOfThreads);
+        long startTime = System.currentTimeMillis();
+        int timeoutInSeconds = 20; // Timeout duration in seconds
+        for (int i = 0; i< numberOfThreads; i++) {
+            executor.submit(() -> {
+                while(true) {
+                    long elapsedTime = System.currentTimeMillis() - startTime;
+                    if (elapsedTime >= timeoutInSeconds * 1000) {
+                        System.out.println("Timeout reached");
+                        count.countDown();
+                        break;
+                    }
+                    int position = 0;
+                    if (randomBoolean()) {
+                        position = 1;
+                    }
+                    TermQueryBuilder termQuery = new TermQueryBuilder("id", UUID.randomUUID().toString());
+                    BytesReference termBytes = null;
+                    try {
+                        termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                    serializedTermQueriesMap.computeIfAbsent(indexShardList.get(position),
+                        k -> Collections.synchronizedList(new ArrayList<>())).add(termBytes);
+                    Loader loader = new Loader(readerMap.get(indexShardList.get(position)), 0);
+                    try {
+                        BytesReference value =
+                            cache.getOrCompute(map.get(indexShardList.get(position)), loader,
+                                readerMap.get(indexShardList.get(position)), termBytes);
+                        assertNotNull(value);
+                        //assertTrue(loader.loadedFromCache);
+                        //System.out.println("index shard stats : " +  indexShardList.get(position).requestCache()
+                        // .stats().getMemorySizeInBytes());
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                    valueListMap.put(indexShardList.get(position), termBytes);
+                }
+            });
+        }
+        long startTimeForInvalidationBackground = System.currentTimeMillis();
+        int numberOfThreadsForInvalidation = 2;
+        ExecutorService executor1 = Executors.newFixedThreadPool(numberOfThreadsForInvalidation);
+        CountDownLatch latchForInvalidation = new CountDownLatch(numberOfThreadsForInvalidation);
+        AtomicBoolean indexDeleted = new AtomicBoolean(false);
+        for (int  i = 0; i < numberOfThreadsForInvalidation; i++) {
+            executor.submit(() -> {
+               while (true) {
+                   long elapsedTime = System.currentTimeMillis() - startTimeForInvalidationBackground;
+                   if (elapsedTime >= timeoutInSeconds * 1000) {
+                       System.out.println("Timeout reached for invalidation");
+                       latchForInvalidation.countDown();
+                       break;
+                   }
+                   if (randomBoolean()) {
+                       if (randomBoolean()) {
+                           if (randomBoolean()) {
+                               System.out.println("Deleting one of the index: " + indexShardList.get(1).shardId().getIndex().getName());
+                               if (!indexDeleted.get()) {
+                                   System.out.println("Actual deleting");
+                                   IndexShard indexShardDeleted = indexShardList.get(1);
+                                   IndicesRequestCache.CacheEntity entity2 = map.get(indexShardDeleted);
+                                   cache.clear(entity2);
+                                   indexDeleted.set(true);
+                               }
+                           }
+                       }
+                   }
+                   int position = 0;
+                   if (randomBoolean() && !indexDeleted.get()) {
+                       position = 1;
+                   }
+                   List<BytesReference> bytesReferenceList = serializedTermQueriesMap.get(indexShardList.get(position));
+                   if (bytesReferenceList.size() > 0 ) {
+                       BytesReference reference = bytesReferenceList.get(randomIntBetween(0, bytesReferenceList.size() - 1));
+                       //System.out.println("refeerenceeeeeee");
+                       cache.invalidate(map.get(indexShardList.get(position)),
+                           readerMap.get(indexShardList.get(position)), reference);
+                       //System.out.println("asdsadsadsa");
+                   }
+               }
+            });
+        }
+        count.await();
+        latchForInvalidation.await();
+        //System.out.println("index shard stats : " +  indexShard.requestCache().stats().getMemorySizeInBytes());
+
+        RequestCacheStats requestCacheStats = entity.stats().stats();
+        RequestCacheStats requestCacheStats1 = entity1.stats().stats();
+        System.out.println("request stats hits for entity1 = " + requestCacheStats.getHitCount() + " miss = " + requestCacheStats.getMissCount() + " memory_size_in_bytes = " + requestCacheStats.getMemorySizeInBytes() + " evictions = " + requestCacheStats.getEvictions());
+        System.out.println("request stats hits for entity2 = " + requestCacheStats1.getHitCount() + " miss = " + requestCacheStats1.getMissCount() + " memory_size_in_bytes = " + requestCacheStats1.getMemorySizeInBytes() + " evictions = " + requestCacheStats1.getEvictions());
+//        while (true) {
+//            executor.submit(() -> {
+//                int position = 0;
+//                if (randomBoolean()) {
+//                    position = 1;
+//                }
+//                TermQueryBuilder termQuery = new TermQueryBuilder("id", UUID.randomUUID().toString());
+//                BytesReference termBytes = null;
+//                try {
+//                    termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+//                } catch (IOException e) {
+//                    throw new RuntimeException(e);
+//                }
+//                serializedTermQueriesMap.put(indexShardList.get(position), termBytes);
+//                Loader loader = new Loader(readerMap.get(position), 0);
+//                try {
+//                    BytesReference value =
+//                        cache.getOrCompute(new IndicesService.IndexShardCacheEntity(indexShardList.get(position)), loader,
+//                            readerMap.get(position), termBytes);
+//                } catch (Exception e) {
+//                    throw new RuntimeException(e);
+//                }
+//                valueListMap.put(indexShardList.get(position), termBytes);
+//            });
+//        }
+
+        IOUtils.close(reader, writer, reader1, writer1, dir, dir1, cache);
+        // initial cache
+        //IndicesService.IndexShardCacheEntity entity = new IndicesService.IndexShardCacheEntity(indexShard);
+
+    }
+
+    public void testComputeIfAbsentConcurrently() throws Exception {
+        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
+        String index1 = "test1";
+        IndexShard indexShard = createIndex(index1, Settings.builder()
+            .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+            .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()).getShard(0);
+        ThreadPool threadPool = getThreadPool();
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, (shardId -> {
+            IndexService indexService = indicesService.indices.get(shardId.getIndex().getUUID());
+            if (indexService == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new IndicesService.IndexShardCacheEntity(indexService.getShard(shardId.id())));
+        }), new CacheModule(new ArrayList<>(), Settings.EMPTY).getCacheService(), threadPool);
+        Directory dir = newDirectory();
+        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+
+        for (int  i = 0; i < 100; i ++) {
+            writer.addDocument(newDoc(i, generateString(randomIntBetween(4, 50))));
+        }
+        DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer),indexShard.shardId());
+
+        int numberOfKeys = 30;
+        Thread[] threads = new Thread[numberOfKeys];
+        Phaser phaser = new Phaser(numberOfKeys + 1);
+        CountDownLatch countDownLatch = new CountDownLatch(numberOfKeys); // To wait for all threads to finish.
+
+        //ExecutorService executor1 = Executors.newFixedThreadPool(30);
+
+        IndicesService.IndexShardCacheEntity entity = new IndicesService.IndexShardCacheEntity(indexShard);
+        CounterMetric metric = new CounterMetric();
+        for (int i = 0; i < numberOfKeys; i++) {
+            int finalI = i;
+            threads[i] = new Thread(() -> {
+                TermQueryBuilder termQuery = new TermQueryBuilder("id", generateString(randomIntBetween(4, 50)));
+                BytesReference termBytes = null;
+                try {
+                    termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+                    metric.inc(termBytes.length());
+                    System.out.println("size = " +  termBytes.length());
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+                Loader loader = new Loader(reader, finalI);
+                try {
+                    phaser.arriveAndAwaitAdvance();
+                    BytesReference value = cache.getOrCompute(entity, loader, reader, termBytes);
+                    System.out.println("value size = " + value.length());
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+                countDownLatch.countDown();
+            });
+            threads[i].start();
+        }
+        phaser.arriveAndAwaitAdvance();
+        countDownLatch.await();
+        RequestCacheStats requestCacheStats = entity.stats().stats();
+        System.out.println("request stats hits for entity1 = " + requestCacheStats.getHitCount() + " miss = " + requestCacheStats.getMissCount() + " memory_size_in_bytes = " + requestCacheStats.getMemorySizeInBytes() + " evictions = " + requestCacheStats.getEvictions());
+        cache.clear(entity);
+        requestCacheStats = entity.stats().stats();
+        System.out.println("request stats hits for entity1 = " + requestCacheStats.getHitCount() + " miss = " + requestCacheStats.getMissCount() + " memory_size_in_bytes = " + requestCacheStats.getMemorySizeInBytes() + " evictions = " + requestCacheStats.getEvictions());
+        IOUtils.close(reader, writer, dir, cache);
+    }
+
+    public void testRemovalWithMultipleIndicesConcurrently() throws Exception {
+        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
+        int numberOfIndices = 50;
+        List<String> indicesList = new ArrayList<>();
+        List<IndexShard> indexShardList = Collections.synchronizedList(new ArrayList<>());
+        for (int i = 0; i < numberOfIndices; i++) {
+            String indexName = "test" + i;
+            indicesList.add(indexName);
+            IndexShard indexShard = createIndex(indexName, Settings.builder()
+                .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()).getShard(0);
+            indexShardList.add(indexShard);
+        }
+        ThreadPool threadPool = getThreadPool();
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, (shardId -> {
+            IndexService indexService = indicesService.indices.get(shardId.getIndex().getUUID());
+            if (indexService == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new IndicesService.IndexShardCacheEntity(indexService.getShard(shardId.id())));
+        }), new CacheModule(new ArrayList<>(), Settings.EMPTY).getCacheService(), threadPool);
+        Map<IndexShard, DirectoryReader> readerMap = new ConcurrentHashMap<>();
+        Map<IndexShard, IndicesService.IndexShardCacheEntity> entityMap = new ConcurrentHashMap<>();
+        Map<IndexShard, IndexWriter> writerMap = new ConcurrentHashMap<>();
+        int numberOfItems = randomIntBetween(200, 400);
+        List<Directory> directories = new ArrayList<>();
+        for (int i = 0; i < numberOfIndices; i++) {
+            IndexShard  indexShard = indexShardList.get(i);
+            entityMap.put(indexShard, new IndicesService.IndexShardCacheEntity(indexShard));
+            Directory dir = newDirectory();
+            directories.add(dir);
+            IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+            for (int j = 0; j < numberOfItems; j++) {
+                writer.addDocument(newDoc(j, generateString(randomIntBetween(4, 50))));
+            }
+            writerMap.put(indexShard, writer);
+            DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer),
+                indexShard.shardId());
+            readerMap.put(indexShard, reader);
+        }
+
+        ExecutorService executorService = Executors.newFixedThreadPool(5);
+
+        System.out.println("numberOfItems = " + numberOfItems);
+        CountDownLatch latch = new CountDownLatch(numberOfItems);
+        Map<IndexShard, List<BytesReference>> termQueryMap = new ConcurrentHashMap<>();
+        Map<BytesReference, List<BytesReference>> valueMap = new ConcurrentHashMap<>();
+        CounterMetric metric = new CounterMetric();
+        List<RemovalNotification<IndicesRequestCache.Key, BytesReference>> removalNotifications =
+            Collections.synchronizedList(new ArrayList<>());
+        for (int  i = 0; i < numberOfItems; i++) {
+            int finalI = i;
+            executorService.submit(() -> {
+                try {
+                    metric.inc(1);
+                    int randomIndexPosition = randomIntBetween(0, numberOfIndices - 1);
+                    IndexShard indexShard = indexShardList.get(randomIndexPosition);
+                    TermQueryBuilder termQuery = new TermQueryBuilder("id", generateString(randomIntBetween(4, 50)));
+                    BytesReference termBytes = null;
+                    try {
+                        termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+                        //metric.inc(termBytes.length());
+                        //System.out.println("size = " +  termBytes.length());
+                    } catch (IOException e) {
+                        System.out.println("exception1 " + e.getMessage());
+                        throw new RuntimeException(e);
+                    }
+                    synchronized (termQueryMap) {
+                        List<BytesReference> bytesReferenceList = termQueryMap.computeIfAbsent(indexShard, k -> new ArrayList<>());
+                        bytesReferenceList.add(termBytes);
+                        //termQueryMap.computeIfAbsent(indexShard, k -> new ArrayList<>()).add(termBytes);
+                    }
+
+                    Loader loader = new Loader(readerMap.get(indexShard), finalI);
+                    try {
+                        //phaser.arriveAndAwaitAdvance();
+                        BytesReference value = cache.getOrCompute(entityMap.get(indexShard), loader, readerMap.get(indexShard), termBytes);
+                        synchronized (valueMap) {
+                            List<BytesReference> bytesReferenceList = valueMap.computeIfAbsent(termBytes,
+                                k -> new ArrayList<>());
+                            bytesReferenceList.add(value);
+                        }
+                        OpenSearchDirectoryReader.DelegatingCacheHelper delegatingCacheHelper =
+                            (OpenSearchDirectoryReader.DelegatingCacheHelper) readerMap.get(indexShard)
+                                .getReaderCacheHelper();
+                        String readerCacheKeyId = delegatingCacheHelper.getDelegatingCacheKey().getId();
+                        removalNotifications.add(new RemovalNotification<>(new IndicesRequestCache.Key(indexShard.shardId(), termBytes, readerCacheKeyId), value,
+                            RemovalReason.EVICTED));
+                    } catch (Exception e) {
+                        System.out.println("exception2 " + e.getMessage());
+                        throw new RuntimeException(e);
+                    }
+                    latch.countDown();
+                } catch (Exception ex) {
+                    System.out.println("exceptionssssssssss " + ex.getMessage() + " exception = " + ex);
+                }
+            });
+        }
+        System.out.println("Reached here!!!");
+        latch.await();
+        int actual = 0;
+        for (Map.Entry<IndexShard, List<BytesReference>> entry: termQueryMap.entrySet()) {
+            List<BytesReference> bytesReferenceList = entry.getValue();
+            actual += bytesReferenceList.size();
+        }
+        assertEquals(numberOfItems, actual);
+        getNodeCacheStats(client());
+
+
+        List<IndexShard> copyIndexShardList = Collections.synchronizedList(new ArrayList<>());
+        copyIndexShardList.addAll(indexShardList);
+        CountDownLatch latch1 = new CountDownLatch(numberOfItems);
+        CounterMetric metric1 = new CounterMetric();
+
+        for (int i = 0; i < indicesList.size(); i++) {
+            IndexShard indexShard = indexShardList.get(i);
+            System.out.println("memory size for index " +  indexShard.shardId().getIndex().getName() + " size: " + indexShard.requestCache().stats().getMemorySizeInBytes());
+        }
+        assertEquals(removalNotifications.size(), numberOfItems);
+        for (int i = 0; i < removalNotifications.size(); i++) {
+            int finalI = i;
+            executorService.submit(() -> {
+                cache.onRemoval(removalNotifications.get(finalI));
+                latch1.countDown();
+            });
+
+        }
+//        for (int i = 0; i < numberOfItems * 2; i++) {
+//            int finalI = i;
+//            //executorService.submit(() -> {
+//                try {
+//                    int randomIndexPosition = randomIntBetween(0, numberOfIndices - 1);
+//                    IndexShard indexShard = indexShardList.get(randomIndexPosition);
+//                    OpenSearchDirectoryReader.DelegatingCacheHelper delegatingCacheHelper =
+//                        (OpenSearchDirectoryReader.DelegatingCacheHelper) readerMap.get(indexShard)
+//                            .getReaderCacheHelper();
+//                    String readerCacheKeyId = delegatingCacheHelper.getDelegatingCacheKey().getId();
+//
+//                    List<BytesReference> termBytes = termQueryMap.get(indexShard);
+//                    if (termBytes != null && termBytes.size() > 0) {
+//                        BytesReference bytesReference = null;
+//                        synchronized (termQueryMap) {
+//                            int randomIndex = ThreadLocalRandom.current().nextInt(termBytes.size());
+//                            bytesReference = termBytes.remove(randomIndex);
+//                            // Update the map with the modified list
+//                            termQueryMap.put(indexShard, termBytes);
+//                        }
+//                        List<BytesReference> value = valueMap.get(bytesReference);
+//                        BytesReference bytesReference1 = value.get(randomIntBetween(0, value.size() - 1));
+//                        RemovalNotification<IndicesRequestCache.Key, BytesReference> removalNotification =
+//                            new RemovalNotification<>(new IndicesRequestCache.Key(indexShard.shardId(),
+//                                bytesReference, readerCacheKeyId),
+//                                bytesReference1, RemovalReason.EVICTED);
+//                        cache.onRemoval(removalNotification);
+//                    } else {
+//                    }
+//                    latch1.countDown();
+//                } catch (Exception ex) {
+//                    System.out.println("Exception: " + ex + " message: " + ex.getMessage());
+//                }
+//                    //System.out.println("latch countDown = " + latch1.getCount());
+//           /// });
+//        }
+
+
+//        // Invalidate
+//        for (int i = 0; i < numberOfIndices; i++) {
+//            int finalI = i;
+//            executorService.submit(() -> {
+//                int randomIndexPosition = finalI;
+//                IndexShard indexShard = copyIndexShardList.get(randomIndexPosition);
+//                indicesService.removeIndex(indexShard.shardId().getIndex(),
+//                    IndicesClusterStateService.AllocatedIndices.IndexRemovalReason.DELETED, "for testing");
+////                List<BytesReference> bytesReferenceList = termQueryMap.get(indexShard);
+////                BytesReference bytesReference = bytesReferenceList.get(randomIntBetween(0,
+////                    bytesReferenceList.size() - 1));
+////                cache.invalidate(entityMap.get(indexShard),
+////                    readerMap.get(indexShard), bytesReference);
+//                metric1.inc();
+//                latch1.countDown();
+//            });
+//        }
+        System.out.println("waiting!!!");
+        latch1.await();
+        //Thread.sleep(16000);
+
+        for (int i = 0; i < indicesList.size(); i++) {
+            IndexShard indexShard = indexShardList.get(i);
+            System.out.println("memory size for index " +  indexShard.shardId().getIndex().getName() + " size: " + indexShard.requestCache().stats().getMemorySizeInBytes());
+        }
+
+        getNodeCacheStats(client());
+        for (int i = 0; i < numberOfIndices; i++) {
+            IndexShard indexShard = indexShardList.get(i);
+            readerMap.get(indexShard).close();
+            writerMap.get(indexShard).close();
+            writerMap.get(indexShard).getDirectory().close();
+        }
+//        directories.stream().forEach(directory -> {
+//            try {
+//                directory.close();
+//            } catch (IOException e) {
+//                throw new RuntimeException(e);
+//            }
+//        });
+        IOUtils.close(cache);
+    }
+
+    public void testWithNullShardId() {
+        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
+        String index1 = "test1";
+        IndexShard indexShard = createIndex(index1, Settings.builder()
+            .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+            .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()).getShard(0);
+        ThreadPool threadPool = getThreadPool();
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, (shardId -> {
+            IndexService indexService = indicesService.indices.get(shardId.getIndex().getUUID());
+            if (indexService == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new IndicesService.IndexShardCacheEntity(indexService.getShard(4)));
+        }), new CacheModule(new ArrayList<>(), Settings.EMPTY).getCacheService(), threadPool);
+
+        TermQueryBuilder termQuery = new TermQueryBuilder("id", generateString(randomIntBetween(4, 50)));
+        BytesReference termBytes = null;
+        try {
+            termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+        IndicesRequestCache.Key key = new IndicesRequestCache.Key(
+            indexShard.shardId(),
+            termBytes,
+            UUID.randomUUID().toString()
+        );
+
+        cache.onRemoval(new RemovalNotification<>(key, termBytes, RemovalReason.EVICTED));
+    }
+
+    public void testCleanCacheWithScenarios() throws Exception {
+        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
+        String index1 = "test1";
+        IndexShard indexShard = createIndex(index1, Settings.builder()
+            .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+            .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()).getShard(0);
+        ThreadPool threadPool = getThreadPool();
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, (shardId -> {
+            IndexService indexService = indicesService.indices.get(shardId.getIndex().getUUID());
+            if (indexService == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new IndicesService.IndexShardCacheEntity(indexService.getShard(shardId.id())));
+        }), new CacheModule(new ArrayList<>(), Settings.EMPTY).getCacheService(), threadPool);
+
+        Directory dir = newDirectory();
+        IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+
+        writer.addDocument(newDoc(0, "foo"));
+        DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), indexShard.shardId());
+        TermQueryBuilder termQuery = new TermQueryBuilder("id", "0");
+        BytesReference termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+        if (randomBoolean()) {
+            writer.flush();
+            IOUtils.close(writer);
+            writer = new IndexWriter(dir, newIndexWriterConfig());
+        }
+        writer.updateDocument(new Term("id", "0"), newDoc(0, "bar"));
+        DirectoryReader secondReader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer), indexShard.shardId());
+
+        // initial cache
+        IndicesService.IndexShardCacheEntity entity = new IndicesService.IndexShardCacheEntity(indexShard);
+        Loader loader = new Loader(reader, 0);
+        BytesReference value = cache.getOrCompute(entity, loader, reader, termBytes);
+        ShardRequestCache requestCacheStats = entity.stats();
+        assertEquals("foo", value.streamInput().readString());
+        assertEquals(0, requestCacheStats.stats().getHitCount());
+        assertEquals(1, requestCacheStats.stats().getMissCount());
+        assertEquals(0, requestCacheStats.stats().getEvictions());
+        assertFalse(loader.loadedFromCache);
+        assertEquals(1, cache.count());
+        assertTrue(requestCacheStats.stats().getMemorySize().bytesAsInt() > value.length());
+        final int cacheSize = requestCacheStats.stats().getMemorySize().bytesAsInt();
+        assertEquals(1, cache.numRegisteredCloseListeners());
+
+        // cache the second
+        IndicesService.IndexShardCacheEntity secondEntity = new IndicesService.IndexShardCacheEntity(indexShard);
+        loader = new Loader(secondReader, 0);
+        value = cache.getOrCompute(entity, loader, secondReader, termBytes);
+        requestCacheStats = entity.stats();
+        assertEquals("bar", value.streamInput().readString());
+        assertEquals(0, requestCacheStats.stats().getHitCount());
+        assertEquals(2, requestCacheStats.stats().getMissCount());
+        assertEquals(0, requestCacheStats.stats().getEvictions());
+        assertFalse(loader.loadedFromCache);
+        assertEquals(2, cache.count());
+        assertTrue(requestCacheStats.stats().getMemorySize().bytesAsInt() > cacheSize + value.length());
+        assertEquals(2, cache.numRegisteredCloseListeners());
+
+        secondEntity = new IndicesService.IndexShardCacheEntity(indexShard);
+        loader = new Loader(secondReader, 0);
+        value = cache.getOrCompute(secondEntity, loader, secondReader, termBytes);
+        requestCacheStats = entity.stats();
+        assertEquals("bar", value.streamInput().readString());
+        assertEquals(1, requestCacheStats.stats().getHitCount());
+        assertEquals(2, requestCacheStats.stats().getMissCount());
+        assertEquals(0, requestCacheStats.stats().getEvictions());
+        assertTrue(loader.loadedFromCache);
+        assertEquals(2, cache.count());
+
+        entity = new IndicesService.IndexShardCacheEntity(indexShard);
+        loader = new Loader(reader, 0);
+        value = cache.getOrCompute(entity, loader, reader, termBytes);
+        assertEquals("foo", value.streamInput().readString());
+        requestCacheStats = entity.stats();
+        assertEquals(2, requestCacheStats.stats().getHitCount());
+        assertEquals(2, requestCacheStats.stats().getMissCount());
+        assertEquals(0, requestCacheStats.stats().getEvictions());
+        assertTrue(loader.loadedFromCache);
+        assertEquals(2, cache.count());
+        System.out.println("memory size = " + entity.stats().stats().getMemorySizeInBytes());
+
+        // Closing the cache doesn't change returned entities
+        reader.close();
+        cache.cacheCleanupManager.cleanCache();
+//        Thread thread = new Thread(() -> {
+//
+//        });
+//        IndicesService.IndexShardCacheEntity finalEntity = entity;
+//        Thread thread1 = new Thread(() -> {
+//           cache.clear(finalEntity);
+//        });
+
+        assertEquals(2, requestCacheStats.stats().getMissCount());
+        assertEquals(0, requestCacheStats.stats().getEvictions());
+        assertTrue(loader.loadedFromCache);
+        assertEquals(1, cache.count());
+        System.out.println("memory size after cleanup = " + entity.stats().stats().getMemorySizeInBytes());
+        //assertEquals(cacheSize, requestCacheStats.stats().getMemorySize().bytesAsInt());
+        //assertEquals(1, cache.numRegisteredCloseListeners());
+
+        // release
+//        if (randomBoolean()) {
+//            secondReader.close();
+//        } else {
+//            indexShard.close("test", true, true); // closed shard but reader is still open
+//            cache.clear(secondEntity);
+//        }
+//        cache.cacheCleanupManager.cleanCache();
+//        assertEquals(2, requestCacheStats.stats().getMissCount());
+//        assertEquals(0, requestCacheStats.stats().getEvictions());
+//        assertTrue(loader.loadedFromCache);
+//        assertEquals(0, cache.count());
+//        assertEquals(0, requestCacheStats.stats().getMemorySize().bytesAsInt());
+
+        IOUtils.close(secondReader, writer, dir, cache);
+        terminate(threadPool);
+        //assertEquals(0, cache.numRegisteredCloseListeners());
+    }
+
+    public void testComputeIfAbsentConcurrentlyAndInvalidateSequentially() throws Exception {
+        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
+        int numberOfIndices = 100;
+        List<String> indicesList = new ArrayList<>();
+        List<IndexShard> indexShardList = Collections.synchronizedList(new ArrayList<>());
+        for (int i = 0; i < numberOfIndices; i++) {
+            String indexName = "test" + i;
+            indicesList.add(indexName);
+            IndexShard indexShard = createIndex(indexName, Settings.builder()
+                .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()).getShard(0);
+            indexShardList.add(indexShard);
+        }
+        ThreadPool threadPool = getThreadPool();
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, (shardId -> {
+            IndexService indexService = indicesService.indices.get(shardId.getIndex().getUUID());
+            if (indexService == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new IndicesService.IndexShardCacheEntity(indexService.getShard(shardId.id())));
+        }), new CacheModule(new ArrayList<>(), Settings.EMPTY).getCacheService(), threadPool);
+        Map<IndexShard, DirectoryReader> readerMap = new ConcurrentHashMap<>();
+        Map<IndexShard, IndicesService.IndexShardCacheEntity> entityMap = new ConcurrentHashMap<>();
+        Map<IndexShard, IndexWriter> writerMap = new ConcurrentHashMap<>();
+        int numberOfItems = randomIntBetween(1000, 4000);
+        List<Directory> directories = new ArrayList<>();
+        for (int i = 0; i < numberOfIndices; i++) {
+            IndexShard  indexShard = indexShardList.get(i);
+            entityMap.put(indexShard, new IndicesService.IndexShardCacheEntity(indexShard));
+            Directory dir = newDirectory();
+            directories.add(dir);
+            IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+            for (int j = 0; j < numberOfItems; j++) {
+                writer.addDocument(newDoc(j, generateString(randomIntBetween(4, 50))));
+            }
+            writerMap.put(indexShard, writer);
+            DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer),
+                indexShard.shardId());
+            readerMap.put(indexShard, reader);
+        }
+
+        ExecutorService executorService = Executors.newFixedThreadPool(15);
+
+
+        CountDownLatch latch = new CountDownLatch(numberOfItems);
+        Map<IndexShard, List<BytesReference>> termQueryMap = new ConcurrentHashMap<>();
+        Map<BytesReference, List<BytesReference>> valueMap = new ConcurrentHashMap<>();
+        CounterMetric metric = new CounterMetric();
+        List<RemovalNotification<IndicesRequestCache.Key, BytesReference>> removalNotifications =
+            Collections.synchronizedList(new ArrayList<>());
+        for (int  i = 0; i < numberOfItems; i++) {
+            int finalI = i;
+            executorService.submit(() -> {
+                try {
+                    metric.inc(1);
+                    int randomIndexPosition = randomIntBetween(0, numberOfIndices - 1);
+                    IndexShard indexShard = indexShardList.get(randomIndexPosition);
+                    TermQueryBuilder termQuery = new TermQueryBuilder("id", generateString(randomIntBetween(4, 50)));
+                    BytesReference termBytes = null;
+                    try {
+                        termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+                        //metric.inc(termBytes.length());
+                        //System.out.println("size = " +  termBytes.length());
+                    } catch (IOException e) {
+                        System.out.println("exception1 " + e.getMessage());
+                        throw new RuntimeException(e);
+                    }
+//                    synchronized (termQueryMap) {
+//                        List<BytesReference> bytesReferenceList = termQueryMap.computeIfAbsent(indexShard, k -> new ArrayList<>());
+//                        bytesReferenceList.add(termBytes);
+//                        //termQueryMap.computeIfAbsent(indexShard, k -> new ArrayList<>()).add(termBytes);
+//                    }
+
+                    Loader loader = new Loader(readerMap.get(indexShard), finalI);
+                    try {
+                        //phaser.arriveAndAwaitAdvance();
+                        BytesReference value = cache.getOrCompute(entityMap.get(indexShard), loader, readerMap.get(indexShard), termBytes);
+//                        synchronized (valueMap) {
+//                            List<BytesReference> bytesReferenceList = valueMap.computeIfAbsent(termBytes,
+//                                k -> new ArrayList<>());
+//                            bytesReferenceList.add(value);
+//                        }
+//                        OpenSearchDirectoryReader.DelegatingCacheHelper delegatingCacheHelper =
+//                            (OpenSearchDirectoryReader.DelegatingCacheHelper) readerMap.get(indexShard)
+//                                .getReaderCacheHelper();
+//                        String readerCacheKeyId = delegatingCacheHelper.getDelegatingCacheKey().getId();
+//                        removalNotifications.add(new RemovalNotification<>(new IndicesRequestCache.Key(indexShard.shardId(), termBytes, readerCacheKeyId), value,
+//                            RemovalReason.EVICTED));
+                    } catch (Exception e) {
+                        System.out.println("exception2 " + e.getMessage());
+                        throw new RuntimeException(e);
+                    }
+                    latch.countDown();
+                } catch (Exception ex) {
+                    System.out.println("exceptionssssssssss " + ex.getMessage() + " exception = " + ex);
+
+                }
+            });
+        }
+        System.out.println("Reached here!!!");
+        latch.await();
+
+        for (int i = 0; i < indicesList.size(); i++) {
+            IndexShard indexShard = indexShardList.get(i);
+            System.out.println("memory size for index " +  indexShard.shardId().getIndex().getName() + " size: " + indexShard.requestCache().stats().getMemorySizeInBytes());
+        }
+        assertEquals(numberOfItems, cache.count());
+        System.out.println("Now invalidating !!!");
+
+        cache.invalidateAll();
+        System.out.println("Invalidation done !!!");
+        for (int i = 0; i < indicesList.size(); i++) {
+            IndexShard indexShard = indexShardList.get(i);
+            System.out.println("memory size for index " +  indexShard.shardId().getIndex().getName() + " size: " + indexShard.requestCache().stats().getMemorySizeInBytes());
+        }
+
+        getNodeCacheStats(client());
+        for (int i = 0; i < numberOfIndices; i++) {
+            IndexShard indexShard = indexShardList.get(i);
+            readerMap.get(indexShard).close();
+            writerMap.get(indexShard).close();
+            writerMap.get(indexShard).getDirectory().close();
+        }
+    }
+
+    public void testComputeIfAbsentConcurrentlyAndDeleteIndicesParallely() throws Exception {
+        IndicesService indicesService = getInstanceFromNode(IndicesService.class);
+        int numberOfIndices = 100;
+        List<String> indicesList = new ArrayList<>();
+        List<IndexShard> indexShardList = Collections.synchronizedList(new ArrayList<>());
+        for (int i = 0; i < numberOfIndices; i++) {
+            String indexName = "test" + i;
+            indicesList.add(indexName);
+            IndexShard indexShard = createIndex(indexName, Settings.builder()
+                .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()).getShard(0);
+            indexShardList.add(indexShard);
+        }
+        ThreadPool threadPool = getThreadPool();
+        IndicesRequestCache cache = new IndicesRequestCache(Settings.EMPTY, (shardId -> {
+            IndexService indexService = indicesService.indices.get(shardId.getIndex().getUUID());
+            if (indexService == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new IndicesService.IndexShardCacheEntity(indexService.getShard(shardId.id())));
+        }), new CacheModule(new ArrayList<>(), Settings.EMPTY).getCacheService(), threadPool);
+        Map<IndexShard, DirectoryReader> readerMap = new ConcurrentHashMap<>();
+        Map<IndexShard, IndicesService.IndexShardCacheEntity> entityMap = new ConcurrentHashMap<>();
+        Map<IndexShard, IndexWriter> writerMap = new ConcurrentHashMap<>();
+        int numberOfItems = randomIntBetween(1000, 4000);
+        Map<String, Boolean> booleanMap = new HashMap<>();
+        List<Directory> directories = new ArrayList<>();
+        for (int i = 0; i < numberOfIndices; i++) {
+            IndexShard  indexShard = indexShardList.get(i);
+            entityMap.put(indexShard, new IndicesService.IndexShardCacheEntity(indexShard));
+            Directory dir = newDirectory();
+            directories.add(dir);
+            IndexWriter writer = new IndexWriter(dir, newIndexWriterConfig());
+            for (int j = 0; j < numberOfItems; j++) {
+                writer.addDocument(newDoc(j, generateString(randomIntBetween(4, 50))));
+            }
+            writerMap.put(indexShard, writer);
+            DirectoryReader reader = OpenSearchDirectoryReader.wrap(DirectoryReader.open(writer),
+                indexShard.shardId());
+            readerMap.put(indexShard, reader);
+            booleanMap.put(indexShard.shardId().toString(), false);
+        }
+        System.out.println("reader map size = " + readerMap.size());
+
+        ExecutorService executorService = Executors.newFixedThreadPool(15);
+
+
+        CountDownLatch latch = new CountDownLatch(numberOfItems);
+        Map<IndexShard, List<BytesReference>> termQueryMap = new ConcurrentHashMap<>();
+        Map<BytesReference, List<BytesReference>> valueMap = new ConcurrentHashMap<>();
+        CounterMetric metric = new CounterMetric();
+        List<RemovalNotification<IndicesRequestCache.Key, BytesReference>> removalNotifications =
+            Collections.synchronizedList(new ArrayList<>());
+        for (int  i = 0; i < numberOfItems; i++) {
+            int finalI = i;
+            executorService.submit(() -> {
+                try {
+                    metric.inc(1);
+                    int randomIndexPosition = randomIntBetween(0, numberOfIndices - 1);
+                    IndexShard indexShard = indexShardList.get(randomIndexPosition);
+                    TermQueryBuilder termQuery = new TermQueryBuilder("id", generateString(randomIntBetween(4, 50)));
+                    BytesReference termBytes = null;
+                    try {
+                        termBytes = XContentHelper.toXContent(termQuery, MediaTypeRegistry.JSON, false);
+                        //metric.inc(termBytes.length());
+                        //System.out.println("size = " +  termBytes.length());
+                    } catch (IOException e) {
+                        System.out.println("exception1 " + e.getMessage());
+                        throw new RuntimeException(e);
+                    }
+//                    synchronized (termQueryMap) {
+//                        List<BytesReference> bytesReferenceList = termQueryMap.computeIfAbsent(indexShard, k -> new ArrayList<>());
+//                        bytesReferenceList.add(termBytes);
+//                        //termQueryMap.computeIfAbsent(indexShard, k -> new ArrayList<>()).add(termBytes);
+//                    }
+
+                    Loader loader = new Loader(readerMap.get(indexShard), finalI);
+                    try {
+                        //phaser.arriveAndAwaitAdvance();
+                        BytesReference value = cache.getOrCompute(entityMap.get(indexShard), loader, readerMap.get(indexShard), termBytes);
+//                        synchronized (valueMap) {
+//                            List<BytesReference> bytesReferenceList = valueMap.computeIfAbsent(termBytes,
+//                                k -> new ArrayList<>());
+//                            bytesReferenceList.add(value);
+//                        }
+//                        OpenSearchDirectoryReader.DelegatingCacheHelper delegatingCacheHelper =
+//                            (OpenSearchDirectoryReader.DelegatingCacheHelper) readerMap.get(indexShard)
+//                                .getReaderCacheHelper();
+//                        String readerCacheKeyId = delegatingCacheHelper.getDelegatingCacheKey().getId();
+//                        removalNotifications.add(new RemovalNotification<>(new IndicesRequestCache.Key(indexShard.shardId(), termBytes, readerCacheKeyId), value,
+//                            RemovalReason.EVICTED));
+                    } catch (Exception e) {
+                        System.out.println("exception2 " + e.getMessage());
+                        throw new RuntimeException(e);
+                    }
+                    latch.countDown();
+                } catch (Exception ex) {
+                    System.out.println("exceptionssssssssss " + ex.getMessage() + " exception = " + ex);
+
+                }
+            });
+        }
+        System.out.println("Reached here!!!");
+        latch.await();
+
+        for (int i = 0; i < indicesList.size(); i++) {
+            IndexShard indexShard = indexShardList.get(i);
+            //System.out.println("memory size for index " +  indexShard.shardId().getIndex().getName() + " size: " +
+            // indexShard.requestCache().stats().getMemorySizeInBytes());
+        }
+        assertEquals(numberOfItems, cache.count());
+        System.out.println("Now deleting all indices parallelly !!!");
+
+        CountDownLatch latch1 = new CountDownLatch(readerMap.size());
+
+        for (Map.Entry<IndexShard, DirectoryReader> entry: readerMap.entrySet()) {
+            executorService.submit(() -> {
+                try {
+                    entry.getValue().close();
+
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+                latch1.countDown();
+            });
+        }
+
+//        for (int i = 0; i< numberOfIndices; i ++) {
+//            int finalI = i;
+//            executorService.submit(() -> {
+//                IndexShard indexShard = indexShardList.get(finalI);
+//                try {
+//                    readerMap.get(indexShard).close();
+//                } catch (IOException e) {
+//                    throw new RuntimeException(e);
+//                }
+//            });
+//            latch1.countDown();
+//        }
+        latch1.await();
+        System.out.println("Deleting done and sleeping for 10 seconds!!!");
+        Thread.sleep(20000);
+//        assertBusy(() -> {
+//            assertEquals(numberOfIndices, cache.cacheCleanupManager.keysToClean.size());
+//        }, 20, TimeUnit.SECONDS);
+//        cache.cacheCleanupManager.cleanCache();
+
+        System.out.println("keysToClean = " +  cache.cacheCleanupManager.keysToClean.size());
+        for (Iterator<IndicesRequestCache.CleanupKey> iterator = cache.cacheCleanupManager.keysToClean.iterator(); iterator.hasNext();) {
+            IndicesRequestCache.CleanupKey cleanupKey = iterator.next();
+            ShardId shardId = ((IndexShard) cleanupKey.entity.getCacheIdentity()).shardId();
+            String readerCacheKeyId = cleanupKey.readerCacheKeyId;
+            booleanMap.put(shardId.toString(), true);
+            //System.out.println("shardId = " + shardId.toString() + " readerCacheKeyId = " + readerCacheKeyId);
+            // gdujddtlrkcbete
+
+        }
+        int missCount = 0;
+        for (Map.Entry<String, Boolean> entry: booleanMap.entrySet()) {
+            if (!entry.getValue()) {
+                missCount++;
+                System.out.println("Doesn't contains this!!! == " + entry.getKey());
+                System.out.println("Was it even tried closing = " + cache.listOfShardIdClosed.contains(entry.getKey()));
+            }
+        }
+        System.out.println("miss count = " + missCount);
+        //Thread.sleep(10000);
+
+//        for (int i = 0; i < indicesList.size(); i++) {
+//            IndexShard indexShard = indexShardList.get(i);
+//            System.out.println("memory size for index " +  indexShard.shardId().getIndex().getName() + " size: " + indexShard.requestCache().stats().getMemorySizeInBytes());
+//        }
+        //Thread.sleep(10000);
+        getNodeCacheStats(client());
+        for (int i = 0; i < numberOfIndices; i++) {
+            IndexShard indexShard = indexShardList.get(i);
+            readerMap.get(indexShard).close();
+            writerMap.get(indexShard).close();
+            writerMap.get(indexShard).getDirectory().close();
+        }
+    }
+
+
+    private static void getNodeCacheStats(Client client) {
+        NodesStatsResponse stats = client.admin().cluster().prepareNodesStats().execute().actionGet();
+        for (NodeStats stat : stats.getNodes()) {
+            if (stat.getNode().isDataNode()) {
+                RequestCacheStats stats1 = stat.getIndices().getRequestCache();
+                System.out.println("total hits = " + stats1.getHitCount() + " miss = " + stats1.getMissCount()
+                    +  " memory = " + stats1.getMemorySizeInBytes() +  " evictions " + stats1.getEvictions());
+            }
+        }
+    }
+
+    public static String generateString(int length) {
+        String characters = "abcdefghijklmnopqrstuvwxyz";
+        StringBuilder sb = new StringBuilder(length);
+        Random random = new Random();
+        for (int i = 0; i < length; i++) {
+            int index = random.nextInt(characters.length());
+            sb.append(characters.charAt(index));
+        }
+        return sb.toString();
+    }
+
 
     private class TestBytesReference extends AbstractBytesReference {
 

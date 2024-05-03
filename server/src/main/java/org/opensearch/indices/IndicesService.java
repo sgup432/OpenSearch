@@ -219,7 +219,7 @@ public class IndicesService extends AbstractLifecycleComponent
     public static final String INDICES_SHARDS_CLOSED_TIMEOUT = "indices.shards_closed_timeout";
     public static final Setting<TimeValue> INDICES_CACHE_CLEAN_INTERVAL_SETTING = Setting.positiveTimeSetting(
         "indices.cache.cleanup_interval",
-        TimeValue.timeValueMinutes(1),
+        TimeValue.timeValueSeconds(100),
         Property.NodeScope
     );
     public static final Setting<Boolean> INDICES_ID_FIELD_DATA_ENABLED_SETTING = Setting.boolSetting(
@@ -334,7 +334,7 @@ public class IndicesService extends AbstractLifecycleComponent
     private final ScriptService scriptService;
     private final ClusterService clusterService;
     private final Client client;
-    private volatile Map<String, IndexService> indices = emptyMap();
+    protected volatile Map<String, IndexService> indices = emptyMap();
     private final Map<Index, List<PendingDelete>> pendingDeletes = new HashMap<>();
     private final AtomicInteger numUncompletedDeletes = new AtomicInteger();
     private final OldShardsStats oldShardsStats = new OldShardsStats();
@@ -1058,9 +1058,9 @@ public class IndicesService extends AbstractLifecycleComponent
             }
 
             listener.beforeIndexRemoved(indexService, reason);
-            logger.debug("{} closing index service (reason [{}][{}])", index, reason, extraInfo);
+            logger.info("{} closing index service (reason [{}][{}])", index, reason, extraInfo);
             indexService.close(extraInfo, reason == IndexRemovalReason.DELETED);
-            logger.debug("{} closed... (reason [{}][{}])", index, reason, extraInfo);
+            logger.info("{} closed... (reason [{}][{}])", index, reason, extraInfo);
             final IndexSettings indexSettings = indexService.getIndexSettings();
             listener.afterIndexRemoved(indexService.index(), indexSettings, reason);
             if (reason == IndexRemovalReason.DELETED) {

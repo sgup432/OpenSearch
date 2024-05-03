@@ -640,6 +640,10 @@ public class IndicesRequestIT extends OpenSearchIntegTestCase {
         assertSameIndicesOptionalRequests(searchRequest, SearchTransportService.FREE_CONTEXT_ACTION_NAME);
     }
 
+    public void testConcurrentRequestsAndRefresh() {
+
+    }
+
     private static void assertSameIndices(IndicesRequest originalRequest, String... actions) {
         assertSameIndices(originalRequest, false, actions);
     }

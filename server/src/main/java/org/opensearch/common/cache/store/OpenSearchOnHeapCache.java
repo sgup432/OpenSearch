@@ -130,6 +130,7 @@ public class OpenSearchOnHeapCache<K, V> implements ICache<K, V>, RemovalListene
                 builder.setMaximumWeightInBytes(config.getMaxSizeInBytes());
                 builder.setExpireAfterAccess(config.getExpireAfterAccess());
             }
+            System.out.println("size onheap cache = " + config.getMaxSizeInBytes());
             return builder.build();
         }
 

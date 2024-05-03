@@ -49,6 +49,7 @@ import org.opensearch.search.aggregations.bucket.global.GlobalAggregationBuilder
 import org.opensearch.search.aggregations.bucket.histogram.DateHistogramInterval;
 import org.opensearch.search.aggregations.bucket.histogram.Histogram;
 import org.opensearch.search.aggregations.bucket.histogram.Histogram.Bucket;
+import org.opensearch.test.OpenSearchIntegTestCase;
 import org.opensearch.test.ParameterizedStaticSettingsOpenSearchIntegTestCase;
 import org.opensearch.test.hamcrest.OpenSearchAssertions;
 
@@ -69,6 +70,7 @@ import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertSearchResp
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
 
+@OpenSearchIntegTestCase.ClusterScope(numDataNodes = 0, scope = OpenSearchIntegTestCase.Scope.TEST)
 public class IndicesRequestCacheIT extends ParameterizedStaticSettingsOpenSearchIntegTestCase {
     public IndicesRequestCacheIT(Settings settings) {
         super(settings);
@@ -676,6 +678,47 @@ public class IndicesRequestCacheIT extends ParameterizedStaticSettingsOpenSearch
         // Should expect miss as key has changed due to change in IndexReader.CacheKey (due to refresh)
         assertCacheState(client, "index", 1, 2);
     }
+
+    public void testConcurrentRequestAndInvalidation() {
+        internalCluster().startNode(
+            Settings.builder()
+                .build()
+        );
+        Client client = client();
+        String index1 = "index1";
+        String index2 = "index2";
+        List<String> indexList = List.of(index1, index2);
+        assertAcked(
+            client.admin()
+                .indices()
+                .prepareCreate(index1)
+                //.setMapping("k", "type=keyword")
+                .setSettings(
+                    Settings.builder()
+                        .put(IndicesRequestCache.INDEX_CACHE_REQUEST_ENABLED_SETTING.getKey(), true)
+                        .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                        .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0)
+                )
+                .get()
+        );
+        assertAcked(
+            client.admin()
+                .indices()
+                .prepareCreate(index2)
+                //.setMapping("k", "type=keyword")
+                .setSettings(
+                    Settings.builder()
+                        .put(IndicesRequestCache.INDEX_CACHE_REQUEST_ENABLED_SETTING.getKey(), true)
+                        .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                        .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0)
+                )
+                .get()
+        );
+        while (true) {
+           // indexRandom(true, client.prepareIndex("index").setSource("k" + iterator, "hello" + iterator));
+        }
+    }
+
 
     private static void assertCacheState(Client client, String index, long expectedHits, long expectedMisses) {
         RequestCacheStats requestCacheStats = client.admin()
