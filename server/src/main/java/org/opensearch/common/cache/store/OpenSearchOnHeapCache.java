@@ -127,10 +127,10 @@ public class OpenSearchOnHeapCache<K, V> implements ICache<K, V>, RemovalListene
             String storeName = cacheSettingForCacheType.get(settings);
             if (!FeatureFlags.PLUGGABLE_CACHE_SETTING.get(settings) || (storeName == null || storeName.isBlank())) {
                 // For backward compatibility as the user intent is to use older settings.
-                builder.setMaximumWeightInBytes(config.getMaxSizeInBytes());
+                builder.setMaximumWeightInBytes(1024*5);
                 builder.setExpireAfterAccess(config.getExpireAfterAccess());
             }
-            System.out.println("size onheap cache = " + config.getMaxSizeInBytes());
+            System.out.println("size onheap cache = " + builder.getMaxWeightInBytes());
             return builder.build();
         }
 

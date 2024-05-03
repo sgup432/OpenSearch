@@ -80,6 +80,7 @@ public final class ShardRequestCache {
         totalMetric.dec(dec);
         if (totalMetric.count() < 0 ) {
             System.out.println("Went negative!!! " + totalMetric.count());
+            throw new RuntimeException("sadsadas");
         }
     }
 }

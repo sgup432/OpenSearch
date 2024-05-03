@@ -141,7 +141,7 @@ public final class IndicesRequestCache implements RemovalListener<IndicesRequest
 
     private final static long BASE_RAM_BYTES_USED = RamUsageEstimator.shallowSizeOfInstance(Key.class);
 
-    List<String> listOfShardIdClosed = Collections.unmodifiableList(new ArrayList<>());
+    List<String> listOfShardIdClosed = Collections.synchronizedList(new ArrayList<>());
 
     private final ConcurrentMap<CleanupKey, Boolean> registeredClosedListeners = ConcurrentCollections.newConcurrentMap();
     private final ByteSizeValue size;
@@ -637,6 +637,9 @@ public final class IndicesRequestCache implements RemovalListener<IndicesRequest
                 if (cleanupKeysFromClosedShards.contains(key.shardId)) {
                     iterator.remove();
                 } else {
+                    // In case this shard got closed meanwhile, it will not be present in cleanupKeysFromClosedShards
+                    // and throw No Such shard exception here.
+                    // Also in case index got deleted, entity would be null and throw exception (NullPointerException)
                     CleanupKey cleanupKey = new CleanupKey(cacheEntityLookup2.apply(key.shardId).orElse(null), key.readerCacheKeyId);
                     if (cleanupKeysFromOutdatedReaders.contains(cleanupKey)) {
                         iterator.remove();
