@@ -219,7 +219,7 @@ public class IndicesService extends AbstractLifecycleComponent
     public static final String INDICES_SHARDS_CLOSED_TIMEOUT = "indices.shards_closed_timeout";
     public static final Setting<TimeValue> INDICES_CACHE_CLEAN_INTERVAL_SETTING = Setting.positiveTimeSetting(
         "indices.cache.cleanup_interval",
-        TimeValue.timeValueSeconds(100),
+        TimeValue.timeValueSeconds(50),
         Property.NodeScope
     );
     public static final Setting<Boolean> INDICES_ID_FIELD_DATA_ENABLED_SETTING = Setting.boolSetting(
@@ -414,7 +414,12 @@ public class IndicesService extends AbstractLifecycleComponent
             if (indexService == null) {
                 return Optional.empty();
             }
-            return Optional.of(new IndexShardCacheEntity(indexService.getShard(shardId.id())));
+            IndexShard indexShard = indexService.getShardOrNull(shardId.id());
+            if (indexShard != null) {
+                return Optional.of(new IndexShardCacheEntity(indexShard));
+            } else {
+                return Optional.empty();
+            }
         }), cacheService, threadPool);
         this.indicesQueryCache = new IndicesQueryCache(settings);
         this.mapperRegistry = mapperRegistry;

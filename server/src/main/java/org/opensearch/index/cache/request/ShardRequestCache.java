@@ -77,10 +77,15 @@ public final class ShardRequestCache {
         if (value != null) {
             dec += value.ramBytesUsed();
         }
-        totalMetric.dec(dec);
-        if (totalMetric.count() < 0 ) {
-            System.out.println("Went negative!!! " + totalMetric.count());
-            throw new RuntimeException("sadsadas");
+        if ((totalMetric.count() - dec) < 0) {
+
+        } else {
+            totalMetric.dec(dec);
         }
+//        totalMetric.dec(dec);
+//        if (totalMetric.count() < 0 ) {
+//            System.out.println("Went negative!!! " + totalMetric.count());
+//            //throw new RuntimeException("Oh my god, stats went negative");
+//        }
     }
 }

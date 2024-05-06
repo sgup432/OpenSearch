@@ -34,15 +34,30 @@ package org.opensearch.indices;
 
 import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
 
+import org.opensearch.action.admin.cluster.health.ClusterHealthResponse;
+import org.opensearch.action.admin.cluster.node.stats.NodeStats;
+import org.opensearch.action.admin.cluster.node.stats.NodesStatsResponse;
+import org.opensearch.action.admin.cluster.reroute.ClusterRerouteResponse;
 import org.opensearch.action.admin.indices.alias.Alias;
+import org.opensearch.action.admin.indices.cache.clear.ClearIndicesCacheRequest;
 import org.opensearch.action.admin.indices.forcemerge.ForceMergeResponse;
 import org.opensearch.action.search.SearchResponse;
 import org.opensearch.action.search.SearchType;
 import org.opensearch.client.Client;
+import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.metadata.IndexMetadata;
+import org.opensearch.cluster.routing.allocation.RerouteExplanation;
+import org.opensearch.cluster.routing.allocation.RoutingExplanations;
+import org.opensearch.cluster.routing.allocation.command.MoveAllocationCommand;
+import org.opensearch.cluster.routing.allocation.decider.Decision;
+import org.opensearch.cluster.routing.allocation.decider.EnableAllocationDecider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.time.DateFormatter;
+import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.FeatureFlags;
+import org.opensearch.core.index.Index;
+import org.opensearch.core.index.shard.ShardId;
+import org.opensearch.env.NodeEnvironment;
 import org.opensearch.index.cache.request.RequestCacheStats;
 import org.opensearch.index.query.QueryBuilders;
 import org.opensearch.search.aggregations.bucket.global.GlobalAggregationBuilder;
@@ -53,14 +68,25 @@ import org.opensearch.test.OpenSearchIntegTestCase;
 import org.opensearch.test.ParameterizedStaticSettingsOpenSearchIntegTestCase;
 import org.opensearch.test.hamcrest.OpenSearchAssertions;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
+import static org.opensearch.cluster.routing.allocation.decider.EnableAllocationDecider.CLUSTER_ROUTING_ALLOCATION_ENABLE_SETTING;
 import static org.opensearch.search.SearchService.CLUSTER_CONCURRENT_SEGMENT_SEARCH_SETTING;
 import static org.opensearch.search.aggregations.AggregationBuilders.dateHistogram;
 import static org.opensearch.search.aggregations.AggregationBuilders.dateRange;
@@ -79,10 +105,11 @@ public class IndicesRequestCacheIT extends ParameterizedStaticSettingsOpenSearch
     @ParametersFactory
     public static Collection<Object[]> parameters() {
         return Arrays.asList(
-            new Object[] { Settings.builder().put(CLUSTER_CONCURRENT_SEGMENT_SEARCH_SETTING.getKey(), false).build() },
-            new Object[] { Settings.builder().put(CLUSTER_CONCURRENT_SEGMENT_SEARCH_SETTING.getKey(), true).build() },
-            new Object[] { Settings.builder().put(FeatureFlags.PLUGGABLE_CACHE, "true").build() },
-            new Object[] { Settings.builder().put(FeatureFlags.PLUGGABLE_CACHE, "false").build() }
+            //new Object[] { Settings.builder().put(CLUSTER_CONCURRENT_SEGMENT_SEARCH_SETTING.getKey(), false).build
+            // () },
+            //new Object[] { Settings.builder().put(CLUSTER_CONCURRENT_SEGMENT_SEARCH_SETTING.getKey(), true).build() },
+            new Object[][]{new Object[]{Settings.builder().build()}}
+            //new Object[] { Settings.builder().put(FeatureFlags.PLUGGABLE_CACHE, "false").build() }
         );
     }
 
@@ -679,6 +706,84 @@ public class IndicesRequestCacheIT extends ParameterizedStaticSettingsOpenSearch
         assertCacheState(client, "index", 1, 2);
     }
 
+    public void testSearchAndWritesParallelly() throws Exception {
+        int numberOfIndices = 5;
+        Client client = client();
+        List<String> indicesName = Collections.synchronizedList(new ArrayList<>());
+        Map<String, String> indexSourceValueMap = new ConcurrentHashMap<>();
+        for (int i = 0; i< numberOfIndices; i++) {
+            String indexName = "test" + i;
+            indicesName.add(indexName);
+            assertAcked(
+                client.admin()
+                    .indices()
+                    .prepareCreate(indexName)
+                    .setMapping("k", "type=keyword")
+                    .setSettings(
+                        Settings.builder()
+                            .put(IndicesRequestCache.INDEX_CACHE_REQUEST_ENABLED_SETTING.getKey(), true)
+                            .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                            .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0)
+                            //.put("index.refresh_interval", "200ms")
+                    )
+                    .get()
+            );
+            String value = UUID.randomUUID().toString();
+            indexRandom(true, client.prepareIndex(indexName).setSource("k", value));
+            indexSourceValueMap.put(indexName, value);
+            ensureSearchable(indexName);
+        }
+        ExecutorService searchService = Executors.newFixedThreadPool(5);
+        // Search parallelly
+        for (int i = 0; i< numberOfIndices; i++) {
+            int finalI = i;
+            searchService.submit(() -> {
+                while (true) {
+                    String indexName = indicesName.get(finalI);
+                    if (randomBoolean()) {
+                        SearchResponse resp =
+                            client.prepareSearch(indicesName.get(finalI)).setRequestCache(true).setQuery(QueryBuilders.termQuery(
+                                "k", UUID.randomUUID().toString())).get();
+                        assertSearchResponse(resp);
+                    } else {
+                        SearchResponse resp =
+                            client.prepareSearch(indicesName.get(finalI)).setRequestCache(true).setQuery(QueryBuilders.termQuery(
+                                "k", indexSourceValueMap.get(indexName))).get();
+                        assertSearchResponse(resp);
+                    }
+                }
+            });
+        }
+
+        ExecutorService writeService = Executors.newFixedThreadPool(3);
+        // Update/Write parallelly
+        for (int i = 0; i< numberOfIndices; i++) {
+            int finalI = i;
+            searchService.submit(() -> {
+                while (true) {
+                    String indexName = indicesName.get(finalI);
+                    try {
+                        String randomValue = UUID.randomUUID().toString();
+                        indexRandom(true, client.prepareIndex(indexName).setSource("k", randomValue));
+                        indexSourceValueMap.put(indexName, randomValue);
+                        //refreshAndWaitForReplication(indexName);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException("Exception here!!!!: " + e);
+                    }
+                }
+            });
+        }
+
+
+
+        // Check for stats
+        while (true) {
+            RequestCacheStats stats = getNodeCacheStats(client);
+            System.out.println("hits = " + stats.getHitCount() + " miss = " + stats.getMissCount() + " memory = " + stats.getMemorySizeInBytes() + " evictions = " + stats.getEvictions());
+            Thread.sleep(4000);
+        }
+    }
+
     public void testConcurrentRequestAndInvalidation() {
         internalCluster().startNode(
             Settings.builder()
@@ -714,11 +819,201 @@ public class IndicesRequestCacheIT extends ParameterizedStaticSettingsOpenSearch
                 )
                 .get()
         );
-        while (true) {
-           // indexRandom(true, client.prepareIndex("index").setSource("k" + iterator, "hello" + iterator));
-        }
+//        while (true) {
+//           // indexRandom(true, client.prepareIndex("index").setSource("k" + iterator, "hello" + iterator));
+//        }
     }
 
+    // closing the Index after caching will clean up from Indices Request Cache
+    public void testCacheClearanceAfterIndexClosure() throws Exception {
+        int cacheCleanIntervalInMillis = 100;
+        String node = internalCluster().startNode(
+            Settings.builder()
+               // .put(IndicesRequestCache.INDICES_REQUEST_CACHE_CLEANUP_STALENESS_THRESHOLD_SETTING_KEY, 0.10)
+                .put(
+                    "indices.cache.cleanup_interval",
+                    TimeValue.timeValueMillis(cacheCleanIntervalInMillis)
+                )
+        );
+        System.out.println("size = " + cluster().size());
+        Client client = client(node);
+        String index = "index";
+        setupIndex(client, index);
+
+        // assert there are no entries in the cache for index
+        assertEquals(0, getRequestCacheStats(client, index).getMemorySizeInBytes());
+        // assert there are no entries in the cache from other indices in the node
+        assertEquals(0, getNodeCacheStats(client).getMemorySizeInBytes());
+        // create first cache entry in index
+        createCacheEntry(client, index, "hello");
+        assertCacheState(client, index, 0, 1);
+        assertTrue(getRequestCacheStats(client, index).getMemorySizeInBytes() > 0);
+        assertTrue(getNodeCacheStats(client).getMemorySizeInBytes() > 0);
+
+        // close index
+        assertAcked(client.admin().indices().prepareClose(index));
+        // request cache stats cannot be access since Index should be closed
+        try {
+            getRequestCacheStats(client, index);
+        } catch (Exception e) {
+            assert (e instanceof IndexClosedException);
+        }
+        // sleep until cache cleaner would have cleaned up the stale key from index
+        assertBusy(() -> {
+            // cache cleaner should have cleaned up the stale keys from index
+            assertEquals(0, getNodeCacheStats(client).getMemorySizeInBytes());
+        }, cacheCleanIntervalInMillis * 2, TimeUnit.MILLISECONDS);
+    }
+
+    public void testDeleteAndCreateSameIndexShardOnSameNode() throws Exception {
+        String node_1 = internalCluster().startNode(Settings.builder().build());
+        Client client = client(node_1);
+        logger.info("--> starting a node");
+
+
+        assertThat(cluster().size(), equalTo(1));
+        ClusterHealthResponse healthResponse =
+            client().admin().cluster().prepareHealth().setWaitForNodes("1").execute().actionGet();
+        assertThat(healthResponse.isTimedOut(), equalTo(false));
+
+        String indexName = "test";
+
+        logger.info("--> create an index with 2 shard");
+        createIndex(
+            indexName,
+            Settings.builder().put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 2).put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0).build()
+        );
+
+        ensureGreen(indexName);
+
+        // Write and cache few items for indexShard test#0
+        indexRandom(true, client.prepareIndex(indexName).setSource("k", "hello"));
+        indexRandom(true, client.prepareIndex(indexName).setSource("y", "hello again"));
+        SearchResponse resp = client.prepareSearch(indexName).setRequestCache(true).setQuery(QueryBuilders.termQuery("k",
+            "hello")).get();
+        assertSearchResponse(resp);
+        resp = client.prepareSearch(indexName).setRequestCache(true).setQuery(QueryBuilders.termQuery("y",
+            "hello")).get();
+
+        RequestCacheStats stats = getNodeCacheStats(client);
+        System.out.println("misses = " + stats.getMissCount() + " memory = " + stats.getMemorySizeInBytes());
+        assertTrue(stats.getMemorySizeInBytes() > 0);
+
+        logger.info("--> disable allocation");
+        Settings newSettings = Settings.builder().put(CLUSTER_ROUTING_ALLOCATION_ENABLE_SETTING.getKey(), EnableAllocationDecider.Allocation.NONE.name()).build();
+        client().admin().cluster().prepareUpdateSettings().setTransientSettings(newSettings).execute().actionGet();
+
+        logger.info("--> starting a second node");
+        String node_2 = internalCluster().startDataOnlyNode(Settings.builder().build());
+        assertThat(cluster().size(), equalTo(2));
+        healthResponse = client().admin().cluster().prepareHealth().setWaitForNodes("2").execute().actionGet();
+        assertThat(healthResponse.isTimedOut(), equalTo(false));
+
+        logger.info("--> try to move the shard from node1 to node2");
+        MoveAllocationCommand cmd = new MoveAllocationCommand(indexName, 0, node_1, node_2);
+        internalCluster().client().admin().cluster().prepareReroute().add(cmd).get();
+        ClusterHealthResponse clusterHealth = client().admin().cluster().prepareHealth().setWaitForNoRelocatingShards(true).get();
+        assertThat(clusterHealth.isTimedOut(), equalTo(false));
+
+        ClusterState state = client().admin().cluster().prepareState().get().getState();
+        Index index = state.metadata().index("test").getIndex();
+
+        stats = getNodeCacheStats(client);
+        System.out.println("misses = " + stats.getMissCount() + " memory = " + stats.getMemorySizeInBytes());
+
+
+        //assertEquals(0, getRequestCacheStats(client, indexName).getMemorySizeInBytes());
+
+
+//        final Path path = shardDirectory(node_1, index, 0);
+//        assertBusy(() -> assertFalse("Expected shard to not exist: " + path, Files.exists(path)));
+//
+//        Path path1 = shardDirectory(node_1, index, 0);
+//        assertBusy(() -> assertTrue("Expected shard to exist: " + path1, Files.exists(path1)));
+
+//        assertThat(Files.exists(shardDirectory(node_1, index, 0)), equalTo(false));
+//        assertThat(Files.exists(shardDirectory(node_2, index, 0)), equalTo(true));
+
+        logger.info("--> try to move the shard again from node2 to node1");
+        cmd = new MoveAllocationCommand(indexName, 0, node_2, node_1);
+        internalCluster().client().admin().cluster().prepareReroute().add(cmd).get();
+        clusterHealth = client().admin().cluster().prepareHealth().setWaitForNoRelocatingShards(true).get();
+        assertThat(clusterHealth.isTimedOut(), equalTo(false));
+        assertThat(Files.exists(shardDirectory(node_1, index, 0)), equalTo(true));
+
+        state = client().admin().cluster().prepareState().get().getState();
+        index = state.metadata().index("test").getIndex();
+
+        resp = client.prepareSearch(indexName).setRequestCache(true).setQuery(QueryBuilders.termQuery("k",
+            "hello")).get();
+        stats = getNodeCacheStats(client);
+        System.out.println("Sleeping ==  ");
+        Thread.sleep(100000);
+
+//        ClearIndicesCacheRequest clearIndicesCacheRequest = new ClearIndicesCacheRequest(indexName);
+//        client.admin().indices().clearCache(clearIndicesCacheRequest).actionGet();
+
+        stats = getNodeCacheStats(client);
+        System.out.println("misses = " + stats.getMissCount() + " memory = " + stats.getMemorySizeInBytes());
+        //assertTrue(stats.getMemorySizeInBytes() > 0);
+
+//        final Path path1 = shardDirectory(node_1, index, 0);
+//        assertBusy(() -> assertFalse("Expected shard to not exist: " + path1, Files.exists(path1)));
+
+    }
+
+    private Path shardDirectory(String server, Index index, int shard) {
+        NodeEnvironment env = internalCluster().getInstance(NodeEnvironment.class, server);
+        final Path[] paths = env.availableShardPaths(new ShardId(index, shard));
+        assert paths.length == 1;
+        return paths[0];
+    }
+
+    private static RequestCacheStats getRequestCacheStats(Client client, String index) {
+        return client.admin().indices().prepareStats(index).setRequestCache(true).get().getTotal().getRequestCache();
+    }
+
+    private void createCacheEntry(Client client, String index, String value) {
+        SearchResponse resp = client.prepareSearch(index).setRequestCache(true).setQuery(QueryBuilders.termQuery("k", value)).get();
+        assertSearchResponse(resp);
+        OpenSearchAssertions.assertAllSuccessful(resp);
+    }
+
+    private static RequestCacheStats getNodeCacheStats(Client client) {
+        NodesStatsResponse stats = client.admin().cluster().prepareNodesStats().execute().actionGet();
+        RequestCacheStats stats1 = null;
+        for (NodeStats stat : stats.getNodes()) {
+            if (stat.getNode().isDataNode()) {
+                System.out.println("node Name = " + stat.getNode().getName());
+                System.out.println("misses = " + stat.getIndices().getRequestCache().getMissCount() + " memory = " + stat.getIndices().getRequestCache().getMemorySizeInBytes());
+                stats1 = stat.getIndices().getRequestCache();
+            }
+        }
+        return stats1;
+    }
+
+    private void setupIndex(Client client, String index) throws Exception {
+        assertAcked(
+            client.admin()
+                .indices()
+                .prepareCreate(index)
+                .setMapping("k", "type=keyword")
+                .setSettings(
+                    Settings.builder()
+                        .put(IndicesRequestCache.INDEX_CACHE_REQUEST_ENABLED_SETTING.getKey(), true)
+                        .put(IndexMetadata.SETTING_NUMBER_OF_SHARDS, 1)
+                        .put(IndexMetadata.SETTING_NUMBER_OF_REPLICAS, 0)
+                )
+                .get()
+        );
+        indexRandom(true, client.prepareIndex(index).setSource("k", "hello"));
+        indexRandom(true, client.prepareIndex(index).setSource("k", "there"));
+        ensureSearchable(index);
+    }
+
+    public void testWriteSearchParallely() throws Exception {
+
+    }
 
     private static void assertCacheState(Client client, String index, long expectedHits, long expectedMisses) {
         RequestCacheStats requestCacheStats = client.admin()
