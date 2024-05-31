@@ -35,7 +35,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
@@ -77,14 +80,18 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
     private final TieredSpilloverCacheStatsHolder statsHolder;
     private ToLongBiFunction<ICacheKey<K>, V> weigher;
     private final List<String> dimensionNames;
-    ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
-    ReleasableLock readLock = new ReleasableLock(readWriteLock.readLock());
-    ReleasableLock writeLock = new ReleasableLock(readWriteLock.writeLock());
+//    ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
+//    ReleasableLock readLock = new ReleasableLock(readWriteLock.readLock());
+//    ReleasableLock writeLock = new ReleasableLock(readWriteLock.writeLock());
     /**
      * Maintains caching tiers in ascending order of cache latency.
      */
     private final Map<ICache<K, V>, TierInfo> caches;
     private final List<Predicate<V>> policies;
+
+    Map<ICacheKey<K>, LockWrapper> locks = new ConcurrentHashMap<>();
+
+    Map<ICacheKey<K>, CompletableFuture<Tuple<ICacheKey<K>, V>>> completableFutureMap = new ConcurrentHashMap<>();
 
     TieredSpilloverCache(Builder<K, V> builder) {
         Objects.requireNonNull(builder.onHeapCacheFactory, "onHeap cache builder can't be null");
@@ -141,6 +148,14 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
             .addSettingsUpdateConsumer(DISK_CACHE_ENABLED_SETTING_MAP.get(builder.cacheType), this::enableDisableDiskCache);
     }
 
+    class LockWrapper {
+        ReadWriteLock readWriteLock = new ReentrantReadWriteLock();
+        ReleasableLock readLock = new ReleasableLock(readWriteLock.readLock());
+        ReleasableLock writeLock = new ReleasableLock(readWriteLock.writeLock());
+
+        AtomicInteger refCount = new AtomicInteger();
+    }
+
     // Package private for testing
     ICache<K, V> getOnHeapCache() {
         return onHeapCache;
@@ -149,6 +164,38 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
     // Package private for testing
     ICache<K, V> getDiskCache() {
         return diskCache;
+    }
+
+    private void writeLock(ICacheKey<K> key) {
+        LockWrapper lockWrapper = locks.computeIfAbsent(key, key1 -> {
+           return new LockWrapper();
+        });
+        lockWrapper.refCount.incrementAndGet();
+        lockWrapper.writeLock.acquire();
+    }
+
+    private void readLock(ICacheKey<K> key) {
+        LockWrapper lockWrapper = locks.computeIfAbsent(key, key1 -> {
+            return new LockWrapper();
+        });
+        lockWrapper.refCount.incrementAndGet();
+        lockWrapper.readLock.acquire();
+    }
+
+    private void unlockWriteLock(ICacheKey<K> key) {
+        LockWrapper lockWrapper = locks.get(key);
+        lockWrapper.writeLock.close();
+        if (lockWrapper.refCount.decrementAndGet() == 0) {
+            locks.remove(key);
+        }
+    }
+
+    private void unlockReadLock(ICacheKey<K> key) {
+        LockWrapper lockWrapper = locks.get(key);
+        lockWrapper.readLock.close();
+        if (lockWrapper.refCount.decrementAndGet() == 0) {
+            locks.remove(key);
+        }
     }
 
     // Package private for testing.
@@ -170,9 +217,12 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
 
     @Override
     public void put(ICacheKey<K> key, V value) {
-        try (ReleasableLock ignore = writeLock.acquire()) {
+        try {
+            writeLock(key);
             onHeapCache.put(key, value);
             updateStatsOnPut(TIER_DIMENSION_VALUE_ON_HEAP, key, value);
+        } finally {
+            unlockWriteLock(key);
         }
     }
 
@@ -191,8 +241,11 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
             // This is needed as there can be many requests for the same key at the same time and we only want to load
             // the value once.
             V value = null;
-            try (ReleasableLock ignore = writeLock.acquire()) {
+            try  {
+                writeLock(key);
                 value = onHeapCache.computeIfAbsent(key, loader);
+            } finally {
+                unlockWriteLock(key);
             }
             // Handle stats
             if (loader.isLoaded()) {
@@ -234,8 +287,11 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
                 statsHolder.removeDimensions(dimensionValues);
             }
             if (key.key != null) {
-                try (ReleasableLock ignore = writeLock.acquire()) {
+                try  {
+                    writeLock(key);
                     cacheEntry.getKey().invalidate(key);
+                } finally {
+                    unlockWriteLock(key);
                 }
             }
         }
@@ -243,11 +299,11 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
 
     @Override
     public void invalidateAll() {
-        try (ReleasableLock ignore = writeLock.acquire()) {
+        //try (ReleasableLock ignore = writeLock.acquire()) {
             for (Map.Entry<ICache<K, V>, TierInfo> cacheEntry : caches.entrySet()) {
                 cacheEntry.getKey().invalidateAll();
             }
-        }
+        //}
         statsHolder.reset();
     }
 
@@ -275,11 +331,11 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
 
     @Override
     public void refresh() {
-        try (ReleasableLock ignore = writeLock.acquire()) {
+        //try (ReleasableLock ignore = writeLock.acquire()) {
             for (Map.Entry<ICache<K, V>, TierInfo> cacheEntry : caches.entrySet()) {
                 cacheEntry.getKey().refresh();
             }
-        }
+        //}
     }
 
     @Override
@@ -302,7 +358,8 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
      */
     private Function<ICacheKey<K>, Tuple<V, String>> getValueFromTieredCache(boolean captureStats) {
         return key -> {
-            try (ReleasableLock ignore = readLock.acquire()) {
+            try  {
+                readLock(key);
                 for (Map.Entry<ICache<K, V>, TierInfo> cacheEntry : caches.entrySet()) {
                     if (cacheEntry.getValue().isEnabled()) {
                         V value = cacheEntry.getKey().get(key);
@@ -320,6 +377,8 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
                     }
                 }
                 return null;
+            } finally {
+                unlockReadLock(key);
             }
         };
     }
@@ -328,8 +387,11 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
         ICacheKey<K> key = notification.getKey();
         boolean wasEvicted = SPILLOVER_REMOVAL_REASONS.contains(notification.getRemovalReason());
         if (caches.get(diskCache).isEnabled() && wasEvicted && evaluatePolicies(notification.getValue())) {
-            try (ReleasableLock ignore = writeLock.acquire()) {
+            try {
+                writeLock(key);
                 diskCache.put(key, notification.getValue()); // spill over to the disk tier and increment its stats
+            } finally {
+                unlockWriteLock(key);
             }
             updateStatsOnPut(TIER_DIMENSION_VALUE_DISK, key, notification.getValue());
         } else {
