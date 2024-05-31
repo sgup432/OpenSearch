@@ -93,6 +93,8 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
 
     Map<ICacheKey<K>, CompletableFuture<Tuple<ICacheKey<K>, V>>> completableFutureMap = new ConcurrentHashMap<>();
 
+    ThreadLocal<LockWrapper> threadLocal = new ThreadLocal<>();
+
     TieredSpilloverCache(Builder<K, V> builder) {
         Objects.requireNonNull(builder.onHeapCacheFactory, "onHeap cache builder can't be null");
         Objects.requireNonNull(builder.diskCacheFactory, "disk cache builder can't be null");
@@ -167,10 +169,18 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
     }
 
     private void writeLock(ICacheKey<K> key) {
+        if (threadLocal.get() != null) {
+            LockWrapper lockWrapper = threadLocal.get();
+            lockWrapper.writeLock.close();
+            if (lockWrapper.refCount.decrementAndGet() == 0) {
+                locks.remove(key);
+            }
+        }
         LockWrapper lockWrapper = locks.computeIfAbsent(key, key1 -> {
            return new LockWrapper();
         });
         lockWrapper.refCount.incrementAndGet();
+        threadLocal.set(lockWrapper);
         lockWrapper.writeLock.acquire();
     }
 
@@ -179,6 +189,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
             return new LockWrapper();
         });
         lockWrapper.refCount.incrementAndGet();
+        threadLocal.set(lockWrapper);
         lockWrapper.readLock.acquire();
     }
 
@@ -188,6 +199,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
         if (lockWrapper.refCount.decrementAndGet() == 0) {
             locks.remove(key);
         }
+        threadLocal.remove();
     }
 
     private void unlockReadLock(ICacheKey<K> key) {
@@ -196,6 +208,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
         if (lockWrapper.refCount.decrementAndGet() == 0) {
             locks.remove(key);
         }
+        threadLocal.remove();
     }
 
     // Package private for testing.
