@@ -745,6 +745,8 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
             LoadAwareCacheLoader<ICacheKey<String>, String> tieredCacheLoader = getLoadAwareCacheLoader();
             tieredSpilloverCache.computeIfAbsent(key, tieredCacheLoader);
         }
+        System.out.println("onheap size = " + tieredSpilloverCache.getOnHeapCache().count());
+        System.out.println("disk size = " + tieredSpilloverCache.getDiskCache().count());
         assertEquals(numOfItems1, tieredSpilloverCache.count());
         tieredSpilloverCache.invalidateAll();
         assertEquals(0, tieredSpilloverCache.count());
