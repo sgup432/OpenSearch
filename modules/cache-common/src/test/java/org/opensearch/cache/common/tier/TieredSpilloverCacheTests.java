@@ -1323,6 +1323,65 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
 
     }
 
+    public void testNumLocksTiming() throws Exception {
+        int onHeapCacheSize = randomIntBetween(2400, 2401);
+        int diskCacheSize = randomIntBetween(5000, 10000);
+        int keyValueSize = 50;
+        MockCacheRemovalListener<String, String> removalListener = new MockCacheRemovalListener<>();
+        TieredSpilloverCache<String, String> tieredSpilloverCache = initializeTieredSpilloverCache(
+            keyValueSize,
+            diskCacheSize,
+            removalListener,
+            Settings.builder()
+                .put(
+                    OpenSearchOnHeapCacheSettings.getSettingListForCacheType(CacheType.INDICES_REQUEST_CACHE)
+                        .get(MAXIMUM_SIZE_IN_BYTES_KEY)
+                        .getKey(),
+                    onHeapCacheSize * keyValueSize + "b"
+                )
+                .build(),
+            0
+        );
+
+        int numRequests = 100_000;
+        // Each thread will do this many requests for key with string value of i, and then that many again (for possible hits)
+        int numThreads = 8;
+        Thread[] threads = new Thread[numThreads];
+        Phaser phaser = new Phaser(numThreads + 1);
+        CountDownLatch countDownLatch = new CountDownLatch(numThreads);
+
+        // Precompute the keys each thread will request so we don't include that in the time estimate
+        List<List<ICacheKey<String>>> keysPerThread = new ArrayList<>();
+
+        for (int i = 0; i < numThreads; i++) {
+            keysPerThread.add(new ArrayList<>());
+            int finalI = i;
+            for (int j = 0; j < numRequests; j++) {
+                keysPerThread.get(i).add(getICacheKey(String.valueOf(randomInt(numRequests))));
+            }
+
+            threads[i] = new Thread(() -> {
+                phaser.arriveAndAwaitAdvance();
+                try {
+                    for (int j = 0; j < numRequests; j++) {
+                        tieredSpilloverCache.computeIfAbsent(keysPerThread.get(finalI).get(j), getLoadAwareCacheLoader());
+                        if (j % 100 == 0) {
+                            System.out.println("Finished iter " + j);
+                        }
+                    }
+                } catch (Exception ignored) {}
+                countDownLatch.countDown();
+            });
+            threads[i].start();
+        }
+        long now = System.nanoTime();
+        phaser.arriveAndAwaitAdvance();
+        countDownLatch.await();
+        long elapsed = System.nanoTime() - now;
+        //System.out.println("TIME TAKEN FOR NUM_LOCKS = " + TieredSpilloverCache.NUM_LOCKS + " is " + elapsed + " ns
+        // or " + (float) elapsed / 1000000000 + " sec");
+    }
+
     private List<String> getMockDimensions() {
         List<String> dims = new ArrayList<>();
         for (String dimensionName : dimensionNames) {
