@@ -89,9 +89,10 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
 
     ThreadLocal<SegmentedLock> threadLocal = new ThreadLocal<>();
 
-    private final SegmentedLock[] locks = new SegmentedLock[256];
+    private final int NUM_LOCKS = 1;
+    private final SegmentedLock[] locks = new SegmentedLock[NUM_LOCKS];
     {
-        for (int i = 0; i < 256; i++) {
+        for (int i = 0; i < NUM_LOCKS; i++) {
             locks[i] = new SegmentedLock();
         }
     }
@@ -107,8 +108,13 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
         SegmentedLock segmentedLock = locks[getLockIndexForKey(key)];
         if (threadLocal.get() != null) {
             SegmentedLock segmentedLock1 = threadLocal.get();
-            segmentedLock1.writeLock.close();
-            threadLocal.remove();
+            if (segmentedLock == segmentedLock1 && segmentedLock.writeLock.isHeldByCurrentThread()) {
+                return;
+            }
+            if (segmentedLock1.writeLock.isHeldByCurrentThread()) {
+                segmentedLock1.writeLock.close();
+                threadLocal.remove();
+            }
         }
         threadLocal.set(segmentedLock);
         segmentedLock.writeLock.acquire();
@@ -121,19 +127,24 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
 
     void unlockWriteLock(ICacheKey<K> key) {
         SegmentedLock segmentedLock = locks[getLockIndexForKey(key)];
-        segmentedLock.writeLock.close();
-        if (threadLocal.get() != null) {
-            threadLocal.remove();
+        if (segmentedLock.writeLock.isHeldByCurrentThread()){
+            segmentedLock.writeLock.close();
+            if (threadLocal.get() != null) {
+                threadLocal.remove();
+            }
         }
+
     }
 
     void unlockReadLock(ICacheKey<K> key) {
         SegmentedLock segmentedLock = locks[getLockIndexForKey(key)];
-        segmentedLock.readLock.close();
+        if (segmentedLock.readLock.isHeldByCurrentThread()) {
+            segmentedLock.readLock.close();
+        }
     }
 
     private int getLockIndexForKey(ICacheKey<K> key) {
-        return ((key.hashCode() & 0xff00) >> 8) % 256;
+        return ((key.hashCode() & 0xff00) >> 8) % NUM_LOCKS;
     }
 
     TieredSpilloverCache(Builder<K, V> builder) {
