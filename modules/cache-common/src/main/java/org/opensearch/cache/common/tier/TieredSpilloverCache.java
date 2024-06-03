@@ -171,9 +171,11 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
     private void writeLock(ICacheKey<K> key) {
         if (threadLocal.get() != null) {
             LockWrapper lockWrapper = threadLocal.get();
-            lockWrapper.writeLock.close();
-            if (lockWrapper.refCount.decrementAndGet() == 0) {
-                locks.remove(key);
+            if (lockWrapper != null && lockWrapper.writeLock.isHeldByCurrentThread()) {
+                lockWrapper.writeLock.close();
+                if (lockWrapper.refCount.decrementAndGet() == 0) {
+                    locks.remove(key);
+                }
             }
         }
         LockWrapper lockWrapper = locks.computeIfAbsent(key, key1 -> {
@@ -195,18 +197,22 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
 
     private void unlockWriteLock(ICacheKey<K> key) {
         LockWrapper lockWrapper = locks.get(key);
-        lockWrapper.writeLock.close();
-        if (lockWrapper.refCount.decrementAndGet() == 0) {
-            locks.remove(key);
+        if (lockWrapper != null && lockWrapper.writeLock.isHeldByCurrentThread()) {
+            lockWrapper.writeLock.close();
+            if (lockWrapper.refCount.decrementAndGet() == 0) {
+                locks.remove(key);
+            }
         }
         threadLocal.remove();
     }
 
     private void unlockReadLock(ICacheKey<K> key) {
         LockWrapper lockWrapper = locks.get(key);
-        lockWrapper.readLock.close();
-        if (lockWrapper.refCount.decrementAndGet() == 0) {
-            locks.remove(key);
+        if (lockWrapper != null && lockWrapper.readLock.isHeldByCurrentThread()) {
+            lockWrapper.readLock.close();
+            if (lockWrapper.refCount.decrementAndGet() == 0) {
+                locks.remove(key);
+            }
         }
         threadLocal.remove();
     }

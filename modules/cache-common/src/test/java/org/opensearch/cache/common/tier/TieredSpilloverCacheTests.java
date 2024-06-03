@@ -1368,7 +1368,9 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
                             System.out.println("Finished iter " + j);
                         }
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
                 countDownLatch.countDown();
             });
             threads[i].start();
