@@ -769,6 +769,7 @@ public class Cache<K, V> {
 
     private boolean promote(Entry<K, V> entry, long now) {
         boolean promoted = true;
+        RemovalNotification<K, V> removalNotification = null;
         try (ReleasableLock ignored = lruLock.acquire()) {
             switch (entry.state) {
                 case DELETED:
@@ -782,8 +783,20 @@ public class Cache<K, V> {
                     break;
             }
             if (promoted) {
-                evict(now);
+                while (tail != null && shouldPrune(tail, now)) {
+                    CacheSegment<K, V> segment = getCacheSegment(entry.key);
+                    if (segment != null) {
+                        segment.remove(entry.key, entry.value, f -> {});
+                    }
+                    if (unlink(entry)) {
+                        removalNotification = new RemovalNotification<>(entry.key, entry.value, RemovalReason.EVICTED);
+                        //removalListener.onRemoval(new RemovalNotification<>(entry.key, entry.value, removalReason));
+                    }
+                }
             }
+        }
+        if (removalNotification != null) {
+            removalListener.onRemoval(removalNotification);
         }
         return promoted;
     }
