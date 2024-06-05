@@ -1350,21 +1350,21 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
         Phaser phaser = new Phaser(numThreads + 1);
         CountDownLatch countDownLatch = new CountDownLatch(numThreads);
 
-        new Thread(() -> {
-            try {
-                Thread.sleep(10000);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
-            System.out.println("Taking thread dump");
-            for (Map.Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces().entrySet()) {
-                System.out.println(entry.getKey() + " " + entry.getKey().getState());
-                for (StackTraceElement ste : entry.getValue()) {
-                    System.out.println("\tat " + ste);
-                }
-                System.out.println();
-            }
-        }).start();
+//        new Thread(() -> {
+//            try {
+//                Thread.sleep(10000);
+//            } catch (InterruptedException e) {
+//                throw new RuntimeException(e);
+//            }
+//            System.out.println("Taking thread dump");
+//            for (Map.Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces().entrySet()) {
+//                System.out.println(entry.getKey() + " " + entry.getKey().getState());
+//                for (StackTraceElement ste : entry.getValue()) {
+//                    System.out.println("\tat " + ste);
+//                }
+//                System.out.println();
+//            }
+//        }).start();
         // Precompute the keys each thread will request so we don't include that in the time estimate
         List<List<ICacheKey<String>>> keysPerThread = new ArrayList<>();
 
@@ -1381,8 +1381,7 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
                     for (int j = 0; j < numRequests; j++) {
                         tieredSpilloverCache.computeIfAbsent(keysPerThread.get(finalI).get(j), getLoadAwareCacheLoader());
                         if (j % 100 == 0) {
-                            //System.out.println("Finished iter " + j + " elapsed time = " + (System
-                            // .currentTimeMillis() - startTime));
+                            System.out.println("Finished iter " + j + " elapsed time = " + (System.currentTimeMillis() - startTime));
                         }
                     }
                 } catch (Exception e) {
@@ -1481,7 +1480,7 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
             }
         };
 
-        tieredSpilloverCache.setMockListener(mockRemovalListener);
+        //tieredSpilloverCache.setMockListener(mockRemovalListener);
 
         tieredSpilloverCache.computeIfAbsent(cacheKey1, new LoadAwareCacheLoader<>() {
             boolean isLoaded = false;

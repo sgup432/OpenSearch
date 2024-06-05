@@ -156,6 +156,18 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
         ReleasableLock writeLock = new ReleasableLock(readWriteLock.writeLock());
 
         AtomicInteger refCount = new AtomicInteger();
+
+        String tierName = "";
+
+        LockWrapper(String tierName) {
+            this.tierName = tierName;
+        }
+
+        LockWrapper() {}
+
+        void setTierName(String tierName) {
+            this.tierName = tierName;
+        }
     }
 
     // Package private for testing
@@ -168,7 +180,8 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
         return diskCache;
     }
 
-    private void writeLock(ICacheKey<K> key) {
+
+    private void writeLock(ICacheKey<K> key, String tierName) {
         if (threadLocal.get() != null) {
             LockWrapper lockWrapper = threadLocal.get();
             if (lockWrapper != null && lockWrapper.writeLock.isHeldByCurrentThread()) {
@@ -178,26 +191,39 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
                 }
             }
         }
+
         LockWrapper lockWrapper = locks.computeIfAbsent(key, key1 -> {
            return new LockWrapper();
         });
+//        if (lockWrapper.tierName.equals("")) {
+//            lockWrapper.setTierName(tierName);
+//        }
+//        if (!tierName.equals(lockWrapper.tierName)) {
+//            return;
+//        }
         lockWrapper.refCount.incrementAndGet();
         threadLocal.set(lockWrapper);
         lockWrapper.writeLock.acquire();
     }
 
-    private void readLock(ICacheKey<K> key) {
+    private void readLock(ICacheKey<K> key, String tierName) {
         LockWrapper lockWrapper = locks.computeIfAbsent(key, key1 -> {
             return new LockWrapper();
         });
+//        if (!tierName.equals(lockWrapper.tierName)) {
+//            return;
+//        }
         lockWrapper.refCount.incrementAndGet();
         threadLocal.set(lockWrapper);
         lockWrapper.readLock.acquire();
     }
 
-    private void unlockWriteLock(ICacheKey<K> key) {
+    private void unlockWriteLock(ICacheKey<K> key, String tierName) {
         LockWrapper lockWrapper = locks.get(key);
         if (lockWrapper != null && lockWrapper.writeLock.isHeldByCurrentThread()) {
+//            if (!tierName.equals(lockWrapper.tierName)) {
+//                return;
+//            }
             lockWrapper.writeLock.close();
             if (lockWrapper.refCount.decrementAndGet() == 0) {
                 locks.remove(key);
@@ -206,9 +232,12 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
         threadLocal.remove();
     }
 
-    private void unlockReadLock(ICacheKey<K> key) {
+    private void unlockReadLock(ICacheKey<K> key, String tierName) {
         LockWrapper lockWrapper = locks.get(key);
         if (lockWrapper != null && lockWrapper.readLock.isHeldByCurrentThread()) {
+//            if (!tierName.equals(lockWrapper.tierName)) {
+//                return;
+//            }
             lockWrapper.readLock.close();
             if (lockWrapper.refCount.decrementAndGet() == 0) {
                 locks.remove(key);
@@ -237,11 +266,11 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
     @Override
     public void put(ICacheKey<K> key, V value) {
         try {
-            writeLock(key);
+            writeLock(key, TIER_DIMENSION_VALUE_ON_HEAP);
             onHeapCache.put(key, value);
             updateStatsOnPut(TIER_DIMENSION_VALUE_ON_HEAP, key, value);
         } finally {
-            unlockWriteLock(key);
+            unlockWriteLock(key, TIER_DIMENSION_VALUE_ON_HEAP);
         }
     }
 
@@ -261,10 +290,10 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
             // the value once.
             V value = null;
             try  {
-                writeLock(key);
+                writeLock(key, TIER_DIMENSION_VALUE_ON_HEAP);
                 value = onHeapCache.computeIfAbsent(key, loader);
             } finally {
-                unlockWriteLock(key);
+                unlockWriteLock(key, TIER_DIMENSION_VALUE_ON_HEAP);
             }
             // Handle stats
             if (loader.isLoaded()) {
@@ -307,10 +336,10 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
             }
             if (key.key != null) {
                 try  {
-                    writeLock(key);
+                    writeLock(key, TIER_DIMENSION_VALUE_ON_HEAP);
                     cacheEntry.getKey().invalidate(key);
                 } finally {
-                    unlockWriteLock(key);
+                    unlockWriteLock(key, TIER_DIMENSION_VALUE_ON_HEAP);
                 }
             }
         }
@@ -378,7 +407,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
     private Function<ICacheKey<K>, Tuple<V, String>> getValueFromTieredCache(boolean captureStats) {
         return key -> {
             try  {
-                readLock(key);
+                readLock(key, TIER_DIMENSION_VALUE_ON_HEAP);
                 for (Map.Entry<ICache<K, V>, TierInfo> cacheEntry : caches.entrySet()) {
                     if (cacheEntry.getValue().isEnabled()) {
                         V value = cacheEntry.getKey().get(key);
@@ -397,7 +426,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
                 }
                 return null;
             } finally {
-                unlockReadLock(key);
+                unlockReadLock(key, TIER_DIMENSION_VALUE_ON_HEAP);
             }
         };
     }
@@ -407,10 +436,10 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
         boolean wasEvicted = SPILLOVER_REMOVAL_REASONS.contains(notification.getRemovalReason());
         if (caches.get(diskCache).isEnabled() && wasEvicted && evaluatePolicies(notification.getValue())) {
             try {
-                writeLock(key);
+                writeLock(key, TIER_DIMENSION_VALUE_DISK);
                 diskCache.put(key, notification.getValue()); // spill over to the disk tier and increment its stats
             } finally {
-                unlockWriteLock(key);
+                unlockWriteLock(key, TIER_DIMENSION_VALUE_DISK);
             }
             updateStatsOnPut(TIER_DIMENSION_VALUE_DISK, key, notification.getValue());
         } else {
