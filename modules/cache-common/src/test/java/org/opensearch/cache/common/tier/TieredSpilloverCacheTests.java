@@ -1324,7 +1324,7 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
     }
 
     public void testNumLocksTiming() throws Exception {
-        int onHeapCacheSize = 10;//randomIntBetween(2400, 2401);
+        int onHeapCacheSize = 100;//randomIntBetween(2400, 2401);
         int diskCacheSize = randomIntBetween(5000, 10000);
         int keyValueSize = 50;
         MockCacheRemovalListener<String, String> removalListener = new MockCacheRemovalListener<>();
@@ -1350,21 +1350,21 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
         Phaser phaser = new Phaser(numThreads + 1);
         CountDownLatch countDownLatch = new CountDownLatch(numThreads);
 
-        new Thread(() -> {
-            try {
-                Thread.sleep(10000);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
-            System.out.println("Taking thread dump");
-            for (Map.Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces().entrySet()) {
-                System.out.println(entry.getKey() + " " + entry.getKey().getState());
-                for (StackTraceElement ste : entry.getValue()) {
-                    System.out.println("\tat " + ste);
-                }
-                System.out.println();
-            }
-        }).start();
+//        new Thread(() -> {
+//            try {
+//                Thread.sleep(10000);
+//            } catch (InterruptedException e) {
+//                throw new RuntimeException(e);
+//            }
+//            System.out.println("Taking thread dump");
+//            for (Map.Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces().entrySet()) {
+//                System.out.println(entry.getKey() + " " + entry.getKey().getState());
+//                for (StackTraceElement ste : entry.getValue()) {
+//                    System.out.println("\tat " + ste);
+//                }
+//                System.out.println();
+//            }
+//        }).start();
         // Precompute the keys each thread will request so we don't include that in the time estimate
         List<List<ICacheKey<String>>> keysPerThread = new ArrayList<>();
 
@@ -1372,7 +1372,7 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
             keysPerThread.add(new ArrayList<>());
             int finalI = i;
             for (int j = 0; j < numRequests; j++) {
-                keysPerThread.get(i).add(getICacheKey(String.valueOf(randomInt(10))));
+                keysPerThread.get(i).add(getICacheKey(String.valueOf(randomInt(100))));
             }
 
             threads[i] = new Thread(() -> {
@@ -1396,6 +1396,18 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
         phaser.arriveAndAwaitAdvance();
         countDownLatch.await();
         long elapsed = System.nanoTime() - now;
+
+        Map<ICacheKey<String>, Boolean> map = new HashMap<>();
+
+        for (ICacheKey<String> key: tieredSpilloverCache.keys()) {
+            if (map.containsKey(key)) {
+                System.out.println("Found same key on both tiers");
+            } else {
+                map.put(key, true);
+            }
+        }
+
+
         //System.out.println("TIME TAKEN FOR NUM_LOCKS = " + TieredSpilloverCache.NUM_LOCKS + " is " + elapsed + " ns
         // or " + (float) elapsed / 1000000000 + " sec");
     }
@@ -1481,7 +1493,7 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
             }
         };
 
-        tieredSpilloverCache.setMockListener(mockRemovalListener);
+        //tieredSpilloverCache.setMockListener(mockRemovalListener);
 
         tieredSpilloverCache.computeIfAbsent(cacheKey1, new LoadAwareCacheLoader<>() {
             boolean isLoaded = false;
