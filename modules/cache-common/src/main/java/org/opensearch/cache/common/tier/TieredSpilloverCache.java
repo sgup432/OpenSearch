@@ -89,7 +89,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
 
     ThreadLocal<SegmentedLock> threadLocal = new ThreadLocal<>();
 
-    private final int NUM_LOCKS = 1;
+    private final int NUM_LOCKS = 256;
     private final SegmentedLock[] locks = new SegmentedLock[NUM_LOCKS];
     {
         for (int i = 0; i < NUM_LOCKS; i++) {
