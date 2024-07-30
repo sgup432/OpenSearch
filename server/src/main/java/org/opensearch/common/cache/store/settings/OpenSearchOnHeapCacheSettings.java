@@ -44,14 +44,26 @@ public class OpenSearchOnHeapCacheSettings {
         (key) -> Setting.positiveTimeSetting(key, TimeValue.MAX_VALUE, Setting.Property.NodeScope)
     );
 
+    /**
+     * Setting to define number of segments. By default, it uses 256 segments which is defined in Cache.java.
+     */
+    public static final Setting.AffixSetting<Integer> SEGMENTS_SETTING = Setting.suffixKeySetting(
+        OpenSearchOnHeapCache.OpenSearchOnHeapCacheFactory.NAME + ".segments",
+        (key) -> Setting.intSetting(key, 0, NodeScope)
+    );
+
     public static final String MAXIMUM_SIZE_IN_BYTES_KEY = "maximum_size_in_bytes";
     public static final String EXPIRE_AFTER_ACCESS_KEY = "expire_after_access";
+
+    public static final String SEGMENTS_KEY = "segments_key";
 
     private static final Map<String, Setting.AffixSetting<?>> KEY_SETTING_MAP = Map.of(
         MAXIMUM_SIZE_IN_BYTES_KEY,
         MAXIMUM_SIZE_IN_BYTES,
         EXPIRE_AFTER_ACCESS_KEY,
-        EXPIRE_AFTER_ACCESS_SETTING
+        EXPIRE_AFTER_ACCESS_SETTING,
+        SEGMENTS_KEY,
+        SEGMENTS_SETTING
     );
 
     public static final Map<CacheType, Map<String, Setting<?>>> CACHE_TYPE_MAP = getCacheTypeMap();

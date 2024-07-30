@@ -56,12 +56,16 @@ public class OpenSearchOnHeapCache<K, V> implements ICache<K, V>, RemovalListene
     private final boolean statsTrackingEnabled;
 
     public OpenSearchOnHeapCache(Builder<K, V> builder) {
+        System.out.println("max weight = " + builder.getMaxWeightInBytes());
         CacheBuilder<ICacheKey<K>, V> cacheBuilder = CacheBuilder.<ICacheKey<K>, V>builder()
             .setMaximumWeight(builder.getMaxWeightInBytes())
             .weigher(builder.getWeigher())
             .removalListener(this);
         if (builder.getExpireAfterAcess() != null) {
             cacheBuilder.setExpireAfterAccess(builder.getExpireAfterAcess());
+        }
+        if (builder.getNumberOfSegments() > 0) {
+            cacheBuilder.setNumberOfSegments(builder.getNumberOfSegments());
         }
         cache = cacheBuilder.build();
         this.dimensionNames = Objects.requireNonNull(builder.dimensionNames, "Dimension names can't be null");
@@ -174,18 +178,42 @@ public class OpenSearchOnHeapCache<K, V> implements ICache<K, V>, RemovalListene
             boolean statsTrackingEnabled = statsTrackingEnabled(config.getSettings(), config.getStatsTrackingEnabled());
             ICacheBuilder<K, V> builder = new Builder<K, V>().setDimensionNames(config.getDimensionNames())
                 .setStatsTrackingEnabled(statsTrackingEnabled)
-                .setMaximumWeightInBytes(((ByteSizeValue) settingList.get(MAXIMUM_SIZE_IN_BYTES_KEY).get(settings)).getBytes())
                 .setExpireAfterAccess(((TimeValue) settingList.get(EXPIRE_AFTER_ACCESS_KEY).get(settings)))
                 .setWeigher(config.getWeigher())
                 .setRemovalListener(config.getRemovalListener());
             Setting<String> cacheSettingForCacheType = CacheSettings.CACHE_TYPE_STORE_NAME.getConcreteSettingForNamespace(
                 cacheType.getSettingPrefix()
             );
+            // int numberOfSegments = (int) settingList.get(SEGMENTS_KEY).get(settings);
+            // if (numberOfSegments <= 0 && config.getNumberOfSegments() > 0) {
+            // builder.setNumberOfSegments(config.getNumberOfSegments());
+            // }
+            // Below condition checks whether there was an intention to divide this cache into multiple segments. If
+            // yes, then accordingly set maxSizeInBytes.
+            long maxSizeInBytes = ((ByteSizeValue) settingList.get(MAXIMUM_SIZE_IN_BYTES_KEY).get(settings)).getBytes();
+            if (config.getSegmentNumber() > 0 && config.getNumberOfSegments() > 0) {
+                long perSegmentSizeInBytes = maxSizeInBytes / config.getNumberOfSegments();
+                if (perSegmentSizeInBytes <= 0) {
+                    throw new IllegalArgumentException("Per segment size for opensearch onHeap cache should be " + "greater than 0");
+                }
+                builder.setMaximumWeightInBytes(perSegmentSizeInBytes);
+                // In case this is the last segment, assign the remainder of bytes accordingly
+                if (config.getSegmentNumber() == config.getNumberOfSegments()) {
+                    if (maxSizeInBytes % config.getNumberOfSegments() != 0) {
+                        builder.setMaximumWeightInBytes(perSegmentSizeInBytes + maxSizeInBytes % config.getNumberOfSegments());
+                    }
+                }
+            } else {
+                builder.setMaximumWeightInBytes(maxSizeInBytes);
+            }
+
             String storeName = cacheSettingForCacheType.get(settings);
             if (!FeatureFlags.PLUGGABLE_CACHE_SETTING.get(settings) || (storeName == null || storeName.isBlank())) {
                 // For backward compatibility as the user intent is to use older settings.
                 builder.setMaximumWeightInBytes(config.getMaxSizeInBytes());
                 builder.setExpireAfterAccess(config.getExpireAfterAccess());
+                builder.setNumberOfSegments(-1); // By default it will use 256 as we don't want to use this setting
+                // when user wants to use older default onHeap cache settings.
             }
             return builder.build();
         }

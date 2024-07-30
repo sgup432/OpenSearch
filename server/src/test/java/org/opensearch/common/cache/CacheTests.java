@@ -231,7 +231,7 @@ public class CacheTests extends OpenSearchTestCase {
     // the first batch of cached entries expired and were removed
     public void testExpirationAfterAccess() {
         AtomicLong now = new AtomicLong();
-        Cache<Integer, String> cache = new Cache<Integer, String>() {
+        Cache<Integer, String> cache = new Cache<Integer, String>(-1) {
             @Override
             protected long now() {
                 return now.get();
@@ -268,7 +268,7 @@ public class CacheTests extends OpenSearchTestCase {
 
     public void testSimpleExpireAfterAccess() {
         AtomicLong now = new AtomicLong();
-        Cache<Integer, String> cache = new Cache<Integer, String>() {
+        Cache<Integer, String> cache = new Cache<Integer, String>(-1) {
             @Override
             protected long now() {
                 return now.get();
@@ -290,7 +290,7 @@ public class CacheTests extends OpenSearchTestCase {
 
     public void testExpirationAfterWrite() {
         AtomicLong now = new AtomicLong();
-        Cache<Integer, String> cache = new Cache<Integer, String>() {
+        Cache<Integer, String> cache = new Cache<Integer, String>(-1) {
             @Override
             protected long now() {
                 return now.get();
@@ -330,7 +330,7 @@ public class CacheTests extends OpenSearchTestCase {
 
     public void testComputeIfAbsentAfterExpiration() throws ExecutionException {
         AtomicLong now = new AtomicLong();
-        Cache<Integer, String> cache = new Cache<Integer, String>() {
+        Cache<Integer, String> cache = new Cache<Integer, String>(-1) {
             @Override
             protected long now() {
                 return now.get();
@@ -387,7 +387,7 @@ public class CacheTests extends OpenSearchTestCase {
     // non-promoted entries were removed
     public void testPromotion() {
         AtomicLong now = new AtomicLong();
-        Cache<Integer, String> cache = new Cache<Integer, String>() {
+        Cache<Integer, String> cache = new Cache<Integer, String>(-1) {
             @Override
             protected long now() {
                 return now.get();

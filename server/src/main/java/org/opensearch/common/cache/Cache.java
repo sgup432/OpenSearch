@@ -115,8 +115,17 @@ public class Cache<K, V> {
     // the removal callback
     private RemovalListener<K, V> removalListener = notification -> {};
 
-    // use CacheBuilder to construct
-    Cache() {}
+    private int numberOfSegments = 256;
+
+    Cache(final int numberOfSegments) {
+        if (numberOfSegments != -1) {
+            this.numberOfSegments = numberOfSegments;
+        }
+        this.segments = new CacheSegment[this.numberOfSegments];
+        for (int i = 0; i < this.numberOfSegments; i++) {
+            this.segments[i] = new CacheSegment<>();
+        }
+    }
 
     void setExpireAfterAccessNanos(long expireAfterAccessNanos) {
         if (expireAfterAccessNanos <= 0) {
@@ -149,6 +158,13 @@ public class Cache<K, V> {
             throw new IllegalArgumentException("maximumWeight < 0");
         }
         this.maximumWeight = maximumWeight;
+    }
+
+    void setNumberOfSegments(int numberOfSegments) {
+        if (numberOfSegments < 0) {
+            throw new IllegalArgumentException("numberOfSegments < 0");
+        }
+        this.numberOfSegments = numberOfSegments;
     }
 
     void setWeigher(ToLongBiFunction<K, V> weigher) {
@@ -368,19 +384,17 @@ public class Cache<K, V> {
 
     public static final int NUMBER_OF_SEGMENTS = 256;
     @SuppressWarnings("unchecked")
-    private final CacheSegment<K, V>[] segments = new CacheSegment[NUMBER_OF_SEGMENTS];
-
-    {
-        for (int i = 0; i < segments.length; i++) {
-            segments[i] = new CacheSegment<>();
-        }
-    }
+    private final CacheSegment<K, V>[] segments;
 
     Entry<K, V> head;
     Entry<K, V> tail;
 
     // lock protecting mutations to the LRU list
     private final ReleasableLock lruLock = new ReleasableLock(new ReentrantLock());
+
+    int getNumberOfSegments() {
+        return numberOfSegments;
+    }
 
     /**
      * Returns the value to which the specified key is mapped, or null if this map contains no mapping for the key.

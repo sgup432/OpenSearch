@@ -35,6 +35,7 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.io.IOUtils;
+import org.opensearch.core.common.unit.ByteSizeValue;
 
 import java.io.File;
 import java.io.IOException;
@@ -87,6 +88,7 @@ import static org.opensearch.cache.EhcacheDiskCacheSettings.DISK_STORAGE_PATH_KE
 import static org.opensearch.cache.EhcacheDiskCacheSettings.DISK_WRITE_CONCURRENCY_KEY;
 import static org.opensearch.cache.EhcacheDiskCacheSettings.DISK_WRITE_MAXIMUM_THREADS_KEY;
 import static org.opensearch.cache.EhcacheDiskCacheSettings.DISK_WRITE_MIN_THREADS_KEY;
+import static org.opensearch.common.cache.store.settings.OpenSearchOnHeapCacheSettings.MAXIMUM_SIZE_IN_BYTES_KEY;
 
 /**
  * This variant of disk cache uses Ehcache underneath.
@@ -689,7 +691,13 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
                 throw new IllegalArgumentException("EhcacheDiskCache requires a value serializer of type Serializer<V, byte[]>");
             }
 
-            return new Builder<K, V>().setStoragePath((String) settingList.get(DISK_STORAGE_PATH_KEY).get(settings))
+            String storagePath = (String) settingList.get(DISK_STORAGE_PATH_KEY).get(settings);
+            if (storagePath.isBlank() || storagePath == null) {
+                // In case storage path is not explicitly set by user, use default path.
+                storagePath = config.getStoragePath();
+            }
+
+            EhcacheDiskCache.Builder<K, V> builder = (Builder<K, V>) new Builder<K, V>().setStoragePath(storagePath)
                 .setDiskCacheAlias((String) settingList.get(DISK_CACHE_ALIAS_KEY).get(settings))
                 .setIsEventListenerModeSync((Boolean) settingList.get(DISK_LISTENER_MODE_SYNC_KEY).get(settings))
                 .setCacheType(cacheType)
@@ -702,8 +710,25 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
                 .setRemovalListener(config.getRemovalListener())
                 .setExpireAfterAccess((TimeValue) settingList.get(DISK_CACHE_EXPIRE_AFTER_ACCESS_KEY).get(settings))
                 .setMaximumWeightInBytes((Long) settingList.get(DISK_MAX_SIZE_IN_BYTES_KEY).get(settings))
-                .setSettings(settings)
-                .build();
+                .setSettings(settings);
+            // Below condition checks whether there was an intention to divide this cache into multiple segments. If
+            // yes, then accordingly set maxSizeInBytes.
+            if (config.getSegmentNumber() > 0 && config.getNumberOfSegments() > 0) {
+                long perSegmentSizeInBytes = config.getMaxSizeInBytes() / config.getNumberOfSegments();
+                if (perSegmentSizeInBytes <= 0) {
+                    throw new IllegalArgumentException("Per segment size for ehcache disk cache should be " + "greater than 0");
+                }
+                builder.setMaximumWeightInBytes(perSegmentSizeInBytes);
+                // In case this is the last segment, assign the remainder of bytes accordingly
+                if (config.getSegmentNumber() == config.getNumberOfSegments()) {
+                    if (config.getMaxSizeInBytes() % config.getNumberOfSegments() != 0) {
+                        builder.setMaximumWeightInBytes(config.getMaxSizeInBytes() % config.getNumberOfSegments());
+                    }
+                }
+            } else {
+                builder.setMaximumWeightInBytes(((ByteSizeValue) settingList.get(MAXIMUM_SIZE_IN_BYTES_KEY).get(settings)).getBytes());
+            }
+            return builder.build();
         }
 
         @Override
