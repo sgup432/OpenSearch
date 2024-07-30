@@ -35,7 +35,6 @@ import org.opensearch.common.settings.Setting;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.io.IOUtils;
-import org.opensearch.core.common.unit.ByteSizeValue;
 
 import java.io.File;
 import java.io.IOException;
@@ -88,7 +87,6 @@ import static org.opensearch.cache.EhcacheDiskCacheSettings.DISK_STORAGE_PATH_KE
 import static org.opensearch.cache.EhcacheDiskCacheSettings.DISK_WRITE_CONCURRENCY_KEY;
 import static org.opensearch.cache.EhcacheDiskCacheSettings.DISK_WRITE_MAXIMUM_THREADS_KEY;
 import static org.opensearch.cache.EhcacheDiskCacheSettings.DISK_WRITE_MIN_THREADS_KEY;
-import static org.opensearch.common.cache.store.settings.OpenSearchOnHeapCacheSettings.MAXIMUM_SIZE_IN_BYTES_KEY;
 
 /**
  * This variant of disk cache uses Ehcache underneath.
@@ -692,8 +690,12 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
             }
 
             String storagePath = (String) settingList.get(DISK_STORAGE_PATH_KEY).get(settings);
+            // storagePath += "/" + config.getSegmentNumber();
+            storagePath = Paths.get(storagePath, Integer.toString(config.getSegmentNumber())).toFile().getPath();
+            // If we read the storage path directly from the setting, we have to add the segment number at the end.
             if (storagePath.isBlank() || storagePath == null) {
                 // In case storage path is not explicitly set by user, use default path.
+                // Since this comes from the TSC, it already has the segment number at the end.
                 storagePath = config.getStoragePath();
             }
 
@@ -713,8 +715,10 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
                 .setSettings(settings);
             // Below condition checks whether there was an intention to divide this cache into multiple segments. If
             // yes, then accordingly set maxSizeInBytes.
+            long settingMaxSize = (Long) settingList.get(DISK_MAX_SIZE_IN_BYTES_KEY).get(settings);
             if (config.getSegmentNumber() > 0 && config.getNumberOfSegments() > 0) {
-                long perSegmentSizeInBytes = config.getMaxSizeInBytes() / config.getNumberOfSegments();
+                // long perSegmentSizeInBytes = config.getMaxSizeInBytes() / config.getNumberOfSegments();
+                long perSegmentSizeInBytes = settingMaxSize / config.getNumberOfSegments();
                 if (perSegmentSizeInBytes <= 0) {
                     throw new IllegalArgumentException("Per segment size for ehcache disk cache should be " + "greater than 0");
                 }
@@ -726,7 +730,8 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
                     }
                 }
             } else {
-                builder.setMaximumWeightInBytes(((ByteSizeValue) settingList.get(MAXIMUM_SIZE_IN_BYTES_KEY).get(settings)).getBytes());
+                // builder.setMaximumWeightInBytes(((ByteSizeValue) settingList.get(MAXIMUM_SIZE_IN_BYTES_KEY).get(settings)).getBytes());
+                builder.setMaximumWeightInBytes(settingMaxSize);
             }
             return builder.build();
         }

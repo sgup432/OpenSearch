@@ -1351,7 +1351,6 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
         policies.add(new AllowEvenLengths());
 
         int keyValueSize = 50;
-        int onHeapCacheSize = 1;
         MockCacheRemovalListener<String, String> removalListener = new MockCacheRemovalListener<>();
         TieredSpilloverCache<String, String> tieredSpilloverCache = intializeTieredSpilloverCache(
             keyValueSize,
@@ -1362,7 +1361,7 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
                     OpenSearchOnHeapCacheSettings.getSettingListForCacheType(CacheType.INDICES_REQUEST_CACHE)
                         .get(MAXIMUM_SIZE_IN_BYTES_KEY)
                         .getKey(),
-                    onHeapCacheSize * keyValueSize + "b"
+                    keyValueSize - 1 + "b"
                 )
                 .build(),
             0,
@@ -1454,6 +1453,12 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
                 TieredSpilloverCacheSettings.TOOK_TIME_POLICY_CONCRETE_SETTINGS_MAP.get(CacheType.INDICES_REQUEST_CACHE).getKey(),
                 new TimeValue(timeValueThresholdNanos / 1_000_000)
             )
+            .put(
+                TieredSpilloverCacheSettings.TIERED_SPILLOVER_SEGMENTS.getConcreteSettingForNamespace(
+                    CacheType.INDICES_REQUEST_CACHE.getSettingPrefix()
+                ).getKey(),
+                1
+            )
             .build();
 
         ICache<String, String> tieredSpilloverICache = new TieredSpilloverCache.TieredSpilloverCacheFactory().create(
@@ -1492,7 +1497,8 @@ public class TieredSpilloverCacheTests extends OpenSearchTestCase {
         }
         assertEquals(tookTimeMap.size(), tieredSpilloverCache.count());
 
-        // Ensure all these keys get evicted from the on heap tier by adding > heap tier size worth of random keys
+        // Ensure all these keys get evicted from the on heap tier by adding > heap tier size worth of random keys (this works as we have 1
+        // segment)
         for (int i = 0; i < onHeapCacheSize; i++) {
             tieredSpilloverCache.computeIfAbsent(getICacheKey(UUID.randomUUID().toString()), getLoadAwareCacheLoader(keyValueMap));
         }

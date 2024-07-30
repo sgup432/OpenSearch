@@ -56,7 +56,6 @@ public class OpenSearchOnHeapCache<K, V> implements ICache<K, V>, RemovalListene
     private final boolean statsTrackingEnabled;
 
     public OpenSearchOnHeapCache(Builder<K, V> builder) {
-        System.out.println("max weight = " + builder.getMaxWeightInBytes());
         CacheBuilder<ICacheKey<K>, V> cacheBuilder = CacheBuilder.<ICacheKey<K>, V>builder()
             .setMaximumWeight(builder.getMaxWeightInBytes())
             .weigher(builder.getWeigher())

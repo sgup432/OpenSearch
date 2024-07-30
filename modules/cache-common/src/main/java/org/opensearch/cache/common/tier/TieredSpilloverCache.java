@@ -88,6 +88,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
      */
     Map<ICacheKey<K>, CompletableFuture<Tuple<ICacheKey<K>, V>>> completableFutureMap = new ConcurrentHashMap<>();
 
+    @SuppressWarnings({ "unchecked", "rawtypes" })
     TieredSpilloverCache(Builder<K, V> builder) {
         Objects.requireNonNull(builder.cacheConfig, "cache config can't be null");
         Objects.requireNonNull(builder.cacheConfig.getSettings(), "settings can't be null");
@@ -392,6 +393,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
             statsHolder.reset();
         }
 
+        @SuppressWarnings({ "unchecked" })
         @Override
         public Iterable<ICacheKey<K>> keys() {
             List<Iterable<ICacheKey<K>>> iterableList = new ArrayList<>();
@@ -696,6 +698,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
     }
 
     // Package private for testing.
+    @SuppressWarnings({ "unchecked" })
     Iterable<ICacheKey<K>> getOnHeapCacheKeys() {
         List<Iterable<ICacheKey<K>>> iterableList = new ArrayList<>();
         for (int iter = 0; iter < this.numberOfSegments; iter++) {
@@ -706,6 +709,7 @@ public class TieredSpilloverCache<K, V> implements ICache<K, V> {
     }
 
     // Package private for testing.
+    @SuppressWarnings({ "unchecked" })
     Iterable<ICacheKey<K>> getDiskCacheKeys() {
         List<Iterable<ICacheKey<K>>> iterableList = new ArrayList<>();
         for (int iter = 0; iter < this.numberOfSegments; iter++) {
