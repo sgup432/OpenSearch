@@ -64,7 +64,8 @@ public class OpenSearchOnHeapCache<K, V> implements ICache<K, V>, RemovalListene
             cacheBuilder.setExpireAfterAccess(builder.getExpireAfterAcess());
         }
         if (builder.getNumberOfSegments() > 0) {
-            cacheBuilder.setNumberOfSegments(builder.getNumberOfSegments());
+            // In case this is a segmented cache, creating underlying cache with multiple segments does not make sense.
+            cacheBuilder.setNumberOfSegments(1);
         }
         cache = cacheBuilder.build();
         this.dimensionNames = Objects.requireNonNull(builder.dimensionNames, "Dimension names can't be null");
@@ -183,17 +184,12 @@ public class OpenSearchOnHeapCache<K, V> implements ICache<K, V>, RemovalListene
             Setting<String> cacheSettingForCacheType = CacheSettings.CACHE_TYPE_STORE_NAME.getConcreteSettingForNamespace(
                 cacheType.getSettingPrefix()
             );
-            // int numberOfSegments = (int) settingList.get(SEGMENTS_KEY).get(settings);
-            // if (numberOfSegments <= 0 && config.getNumberOfSegments() > 0) {
-            // builder.setNumberOfSegments(config.getNumberOfSegments());
-            // }
-            // Below condition checks whether there was an intention to divide this cache into multiple segments. If
-            // yes, then accordingly set maxSizeInBytes.
             long maxSizeInBytes = ((ByteSizeValue) settingList.get(MAXIMUM_SIZE_IN_BYTES_KEY).get(settings)).getBytes();
+            // Check if this is a segmented cache.
             if (config.getSegmentNumber() > 0 && config.getNumberOfSegments() > 0) {
                 long perSegmentSizeInBytes = maxSizeInBytes / config.getNumberOfSegments();
                 if (perSegmentSizeInBytes <= 0) {
-                    throw new IllegalArgumentException("Per segment size for opensearch onHeap cache should be " + "greater than 0");
+                    throw new IllegalArgumentException("Per segment size for opensearch onHeap cache should be greater than 0");
                 }
                 builder.setMaximumWeightInBytes(perSegmentSizeInBytes);
                 // In case this is the last segment, assign the remainder of bytes accordingly

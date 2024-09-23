@@ -382,7 +382,6 @@ public class Cache<K, V> {
         }
     }
 
-    public static final int NUMBER_OF_SEGMENTS = 256;
     @SuppressWarnings("unchecked")
     private final CacheSegment<K, V>[] segments;
 
@@ -602,9 +601,9 @@ public class Cache<K, V> {
     public void invalidateAll() {
         Entry<K, V> h;
 
-        boolean[] haveSegmentLock = new boolean[NUMBER_OF_SEGMENTS];
+        boolean[] haveSegmentLock = new boolean[this.numberOfSegments];
         try {
-            for (int i = 0; i < NUMBER_OF_SEGMENTS; i++) {
+            for (int i = 0; i < this.numberOfSegments; i++) {
                 segments[i].segmentLock.writeLock().lock();
                 haveSegmentLock[i] = true;
             }
@@ -621,7 +620,7 @@ public class Cache<K, V> {
                 weight = 0;
             }
         } finally {
-            for (int i = NUMBER_OF_SEGMENTS - 1; i >= 0; i--) {
+            for (int i = this.numberOfSegments - 1; i >= 0; i--) {
                 if (haveSegmentLock[i]) {
                     segments[i].segmentLock.writeLock().unlock();
                 }
@@ -954,6 +953,6 @@ public class Cache<K, V> {
     }
 
     private CacheSegment<K, V> getCacheSegment(K key) {
-        return segments[key.hashCode() & 0xff];
+        return segments[key.hashCode() & (this.numberOfSegments - 1)];
     }
 }

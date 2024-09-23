@@ -62,6 +62,7 @@ public class MockDiskCache<K, V> implements ICache<K, V> {
         if (this.cache.size() >= maxSize) { // For simplification
             this.removalListener.onRemoval(new RemovalNotification<>(key, value, RemovalReason.EVICTED));
             this.statsHolder.decrementItems(List.of());
+            return;
         }
         try {
             Thread.sleep(delay);
@@ -86,8 +87,10 @@ public class MockDiskCache<K, V> implements ICache<K, V> {
 
     @Override
     public void invalidate(ICacheKey<K> key) {
-        removalListener.onRemoval(new RemovalNotification<>(key, cache.get(key), RemovalReason.INVALIDATED));
-        this.cache.remove(key);
+        V value = this.cache.remove(key);
+        if (value != null) {
+            removalListener.onRemoval(new RemovalNotification<>(key, cache.get(key), RemovalReason.INVALIDATED));
+        }
     }
 
     @Override
@@ -160,10 +163,11 @@ public class MockDiskCache<K, V> implements ICache<K, V> {
                 builder.setMaxSize(perSegmentSize);
                 // In case this is the last segment, assign the remainder of bytes accordingly
                 if (config.getSegmentNumber() == config.getNumberOfSegments()) {
-                    if (config.getMaxSizeInBytes() % config.getNumberOfSegments() != 0) {
-                        builder.setMaxSize(maxSize % config.getNumberOfSegments());
+                    if (maxSize % config.getNumberOfSegments() != 0) {
+                        builder.setMaxSize(perSegmentSize + maxSize % config.getNumberOfSegments());
                     }
                 }
+
             } else {
                 builder.setMaxSize(maxSize);
             }

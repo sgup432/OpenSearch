@@ -55,7 +55,7 @@ public class TieredSpilloverCacheSettings {
      */
     public static final Setting.AffixSetting<Integer> TIERED_SPILLOVER_SEGMENTS = Setting.suffixKeySetting(
         TieredSpilloverCache.TieredSpilloverCacheFactory.TIERED_SPILLOVER_CACHE_NAME + ".segments",
-        (key) -> Setting.intSetting(key, 4, NodeScope)
+        (key) -> Setting.intSetting(key, 16, 1, 256, NodeScope)
     );
 
     /**

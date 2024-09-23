@@ -102,8 +102,8 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
     private static final Logger logger = LogManager.getLogger(EhcacheDiskCache.class);
 
     // Unique id associated with this cache.
-    private final static String UNIQUE_ID = UUID.randomUUID().toString();
-    private final static String THREAD_POOL_ALIAS_PREFIX = "ehcachePool";
+    final static String UNIQUE_ID = UUID.randomUUID().toString();
+    final static String THREAD_POOL_ALIAS_PREFIX = "ehcachePool";
     private final static int MINIMUM_MAX_SIZE_IN_BYTES = 1024 * 100; // 100KB
 
     // A Cache manager can create many caches.
@@ -445,7 +445,6 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
     @SuppressForbidden(reason = "Ehcache uses File.io")
     public void close() {
         cacheManager.removeCache(this.diskCacheAlias);
-        cacheManager.close();
         try {
             cacheManager.destroyCache(this.diskCacheAlias);
             // Delete all the disk cache related files/data
@@ -690,17 +689,19 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
             }
 
             String storagePath = (String) settingList.get(DISK_STORAGE_PATH_KEY).get(settings);
-            // storagePath += "/" + config.getSegmentNumber();
-            storagePath = Paths.get(storagePath, Integer.toString(config.getSegmentNumber())).toFile().getPath();
+            //storagePath = Paths.get(storagePath, Integer.toString(config.getSegmentNumber())).toFile().getPath();
             // If we read the storage path directly from the setting, we have to add the segment number at the end.
             if (storagePath.isBlank() || storagePath == null) {
                 // In case storage path is not explicitly set by user, use default path.
                 // Since this comes from the TSC, it already has the segment number at the end.
                 storagePath = config.getStoragePath();
             }
-
+            String diskCacheAlias = (String) settingList.get(DISK_CACHE_ALIAS_KEY).get(settings);
+            if (diskCacheAlias.isBlank() || diskCacheAlias == null) {
+                diskCacheAlias = "disk_cache" + config.getSegmentNumber();
+            }
             EhcacheDiskCache.Builder<K, V> builder = (Builder<K, V>) new Builder<K, V>().setStoragePath(storagePath)
-                .setDiskCacheAlias((String) settingList.get(DISK_CACHE_ALIAS_KEY).get(settings))
+                .setDiskCacheAlias(diskCacheAlias)
                 .setIsEventListenerModeSync((Boolean) settingList.get(DISK_LISTENER_MODE_SYNC_KEY).get(settings))
                 .setCacheType(cacheType)
                 .setKeyType((config.getKeyType()))
@@ -713,14 +714,12 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
                 .setExpireAfterAccess((TimeValue) settingList.get(DISK_CACHE_EXPIRE_AFTER_ACCESS_KEY).get(settings))
                 .setMaximumWeightInBytes((Long) settingList.get(DISK_MAX_SIZE_IN_BYTES_KEY).get(settings))
                 .setSettings(settings);
-            // Below condition checks whether there was an intention to divide this cache into multiple segments. If
-            // yes, then accordingly set maxSizeInBytes.
-            long settingMaxSize = (Long) settingList.get(DISK_MAX_SIZE_IN_BYTES_KEY).get(settings);
+            // If this is suppose to be a segmented cache, then accordingly set max size
+            long maxSizeInBytes = (Long) settingList.get(DISK_MAX_SIZE_IN_BYTES_KEY).get(settings);
             if (config.getSegmentNumber() > 0 && config.getNumberOfSegments() > 0) {
-                // long perSegmentSizeInBytes = config.getMaxSizeInBytes() / config.getNumberOfSegments();
-                long perSegmentSizeInBytes = settingMaxSize / config.getNumberOfSegments();
+                long perSegmentSizeInBytes = maxSizeInBytes / config.getNumberOfSegments();
                 if (perSegmentSizeInBytes <= 0) {
-                    throw new IllegalArgumentException("Per segment size for ehcache disk cache should be " + "greater than 0");
+                    throw new IllegalArgumentException("Per segment size for ehcache disk cache should be greater than 0");
                 }
                 builder.setMaximumWeightInBytes(perSegmentSizeInBytes);
                 // In case this is the last segment, assign the remainder of bytes accordingly
@@ -730,8 +729,7 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
                     }
                 }
             } else {
-                // builder.setMaximumWeightInBytes(((ByteSizeValue) settingList.get(MAXIMUM_SIZE_IN_BYTES_KEY).get(settings)).getBytes());
-                builder.setMaximumWeightInBytes(settingMaxSize);
+                builder.setMaximumWeightInBytes(maxSizeInBytes);
             }
             return builder.build();
         }

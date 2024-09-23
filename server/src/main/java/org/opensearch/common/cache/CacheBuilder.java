@@ -57,8 +57,8 @@ public class CacheBuilder<K, V> {
     private CacheBuilder() {}
 
     public CacheBuilder<K, V> setNumberOfSegments(int numberOfSegments) {
-        if (numberOfSegments < 0) {
-            throw new IllegalArgumentException("Number of segments for cache can't be negative: " + numberOfSegments);
+        if (numberOfSegments <= 0) {
+            throw new IllegalArgumentException("Number of segments for cache can't be <=0: " + numberOfSegments);
         }
         this.numberOfSegments = numberOfSegments;
         return this;
