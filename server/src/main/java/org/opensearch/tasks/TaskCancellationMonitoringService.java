@@ -125,6 +125,8 @@ public class TaskCancellationMonitoringService extends AbstractLifecycleComponen
         if (!TASKS_TO_TRACK.contains(task.getClass())) {
             return;
         }
+        // Not putting under the enable check as whatever tasks which were accumulated before disabling this service
+        // needs to be cleared out.
         this.cancelledTaskTracker.remove(task.getId());
     }
 
@@ -138,8 +140,10 @@ public class TaskCancellationMonitoringService extends AbstractLifecycleComponen
         if (!TASKS_TO_TRACK.contains(task.getClass())) {
             return;
         }
-        // Add task to tracker and mark it as not seen(false) yet by the stats logic.
-        this.cancelledTaskTracker.putIfAbsent(task.getId(), false);
+        if (taskCancellationMonitoringSettings.isEnabled()) {
+            // Add task to tracker and mark it as not seen(false) yet by the stats logic.
+            this.cancelledTaskTracker.putIfAbsent(task.getId(), false);
+        }
     }
 
     public TaskCancellationStats stats() {

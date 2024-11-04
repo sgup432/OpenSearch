@@ -38,6 +38,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.opensearch.tasks.TaskCancellationMonitoringSettings.IS_ENABLED_SETTING;
 
 public class TaskCancellationMonitoringServiceTests extends OpenSearchTestCase {
 
@@ -118,6 +119,47 @@ public class TaskCancellationMonitoringServiceTests extends OpenSearchTestCase {
         assertTrue(taskCancellationMonitoringService.getCancelledTaskTracker().isEmpty());
         assertEquals(0, stats.getSearchShardTaskCancellationStats().getCurrentLongRunningCancelledTaskCount());
         assertEquals(numberOfTasksCancelled, stats.getSearchShardTaskCancellationStats().getTotalLongRunningCancelledTaskCount());
+    }
+
+    public void testWithNonZeroCancelledSearchShardTasksRunningAndServiceDisabled() throws InterruptedException {
+        Settings settings = Settings.builder()
+            .put(DURATION_MILLIS_SETTING.getKey(), 0) // Setting to zero for testing
+            .put(IS_ENABLED_SETTING.getKey(), false)
+            .build();
+        TaskCancellationMonitoringSettings taskCancellationMonitoringSettings = new TaskCancellationMonitoringSettings(
+            settings,
+            new ClusterSettings(settings, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS)
+        );
+
+        TaskCancellationMonitoringService taskCancellationMonitoringService = new TaskCancellationMonitoringService(
+            threadPool,
+            taskManager,
+            taskCancellationMonitoringSettings
+        );
+        int numTasks = randomIntBetween(5, 50);
+        List<SearchShardTask> tasks = createTasks(numTasks);
+
+        int cancelFromIdx = randomIntBetween(0, numTasks - 1);
+        int cancelTillIdx = randomIntBetween(cancelFromIdx, numTasks - 1);
+
+        int numberOfTasksCancelled = cancelTillIdx - cancelFromIdx + 1;
+        CountDownLatch countDownLatch = cancelTasksConcurrently(tasks, cancelFromIdx, cancelTillIdx);
+
+        countDownLatch.await(); // Wait for all threads execution.
+        taskCancellationMonitoringService.doRun(); // Try to run manually
+        TaskCancellationStats stats = taskCancellationMonitoringService.stats();
+        // Shouldn't get tracked
+        assertEquals(0, stats.getSearchShardTaskCancellationStats().getCurrentLongRunningCancelledTaskCount());
+        assertEquals(0, stats.getSearchShardTaskCancellationStats().getTotalLongRunningCancelledTaskCount());
+
+        // We shouldn't be tracking anything.
+        assertEquals(0, taskCancellationMonitoringService.getCancelledTaskTracker().size());
+
+        completeTasksConcurrently(tasks, 0, tasks.size() - 1).await();
+        stats = taskCancellationMonitoringService.stats();
+        assertTrue(taskCancellationMonitoringService.getCancelledTaskTracker().isEmpty());
+        assertEquals(0, stats.getSearchShardTaskCancellationStats().getCurrentLongRunningCancelledTaskCount());
+        assertEquals(0, stats.getSearchShardTaskCancellationStats().getTotalLongRunningCancelledTaskCount());
     }
 
     public void testShouldRunGetsDisabledAfterTaskCompletion() throws InterruptedException {
