@@ -54,6 +54,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.function.Supplier;
 import java.util.function.ToLongBiFunction;
@@ -65,6 +66,7 @@ import org.ehcache.config.builders.CacheEventListenerConfigurationBuilder;
 import org.ehcache.config.builders.CacheManagerBuilder;
 import org.ehcache.config.builders.PooledExecutionServiceConfigurationBuilder;
 import org.ehcache.config.builders.ResourcePoolsBuilder;
+import org.ehcache.config.builders.WriteBehindConfigurationBuilder;
 import org.ehcache.config.units.MemoryUnit;
 import org.ehcache.core.spi.service.FileBasedPersistenceContext;
 import org.ehcache.event.CacheEvent;
@@ -180,7 +182,7 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
         this.removalListener = builder.getRemovalListener();
         Objects.requireNonNull(builder.getWeigher(), "Weigher can't be null");
         this.ehCacheEventListener = new EhCacheEventListener(builder.getRemovalListener(), builder.getWeigher());
-        this.cache = buildCache(Duration.ofMillis(expireAfterAccess.getMillis()), builder);
+        this.cache = buildCache(Duration.ofMillis(expireAfterAccess.getMillis()), builder, true);
         List<String> dimensionNames = Objects.requireNonNull(builder.dimensionNames, "Dimension names can't be null");
         if (builder.getStatsTrackingEnabled()) {
             // If this cache is being used, FeatureFlags.PLUGGABLE_CACHE is already on, so we can always use the DefaultCacheStatsHolder
@@ -192,7 +194,7 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
     }
 
     @SuppressWarnings({ "rawtypes", "removal" })
-    private Cache<ICacheKey, ByteArrayWrapper> buildCache(Duration expireAfterAccess, Builder<K, V> builder) {
+    private Cache<ICacheKey, ByteArrayWrapper> buildCache(Duration expireAfterAccess, Builder<K, V> builder, boolean writeBehind) {
         // Creating the cache requires permissions specified in plugin-security.policy
         int segmentCount = (Integer) EhcacheDiskCacheSettings.getSettingListForCacheType(cacheType).get(DISK_SEGMENT_KEY).get(settings);
         if (builder.getNumberOfSegments() > 0) {
@@ -237,6 +239,13 @@ public class EhcacheDiskCache<K, V> implements ICache<K, V> {
         // serializer directly to ehcache, ehcache requires the classes match exactly before/after serialization.
         // This is not always feasible or necessary, like for BytesReference. So, we handle the value serialization
         // before V hits ehcache.
+        if (writeBehind) {
+            cacheConfigurationBuilder.withService(
+                WriteBehindConfigurationBuilder.newBatchedWriteBehindConfiguration(5, TimeUnit.SECONDS, 10)
+                    .concurrencyLevel(1)
+                    .queueSize(10000)
+            ).build();
+        }
 
         return EhcacheDiskCacheManager.createCache(cacheType, this.diskCacheAlias, cacheConfigurationBuilder);
     }

@@ -126,6 +126,30 @@ public class EhcacheDiskCacheSettings {
     );
 
     /**
+     * Disk cache max delay for batch.
+     */
+    public static final Setting.AffixSetting<TimeValue> DISK_CACHE_MAX_DELAY_FOR_BATCH = Setting.suffixKeySetting(
+        EhcacheDiskCache.EhcacheDiskCacheFactory.EHCACHE_DISK_CACHE_NAME + ".max_delay_for_batch",
+        (key) -> Setting.positiveTimeSetting(key, TimeValue.MAX_VALUE, NodeScope)
+    );
+
+    /**
+     * Disk cache batch size
+     */
+    public static final Setting.AffixSetting<Integer> DISK_CACHE_BATCH_SIZE = Setting.suffixKeySetting(
+        EhcacheDiskCache.EhcacheDiskCacheFactory.EHCACHE_DISK_CACHE_NAME + ".batch_size",
+        (key) -> Setting.intSetting(key, 10, 1, 10000, NodeScope)
+    );
+
+    /**
+     * Disk cache max size of write behind queue
+     */
+    public static final Setting.AffixSetting<Integer> DISK_CACHE_MAX_QUEUE_SIZE_FOR_WRITE_BEHIND = Setting.suffixKeySetting(
+        EhcacheDiskCache.EhcacheDiskCacheFactory.EHCACHE_DISK_CACHE_NAME + ".write_behind_queue_size",
+        (key) -> Setting.intSetting(key, 10000, 1, 1000000, NodeScope)
+    );
+
+    /**
      * Key for disk segment.
      */
     public static final String DISK_SEGMENT_KEY = "disk_segment";
@@ -167,6 +191,21 @@ public class EhcacheDiskCacheSettings {
     public static final String DISK_LISTENER_MODE_SYNC_KEY = "disk_listener_mode";
 
     /**
+     * max delay
+     */
+    public static final String DISK_CACHE_MAX_DELAY_FOR_BATCH_KEY = "max_delay_for_batch";
+
+    /**
+     * batch key
+     */
+    public static final String DISK_CACHE_BATCH_SIZE_KEY = "batch_size_key";
+
+    /**
+     * max queue size
+     */
+    public static final String DISK_CACHE_MAX_QUEUE_SIZE_FOR_WRITE_BEHIND_KEY = "max_queue_size_for_write_behind";
+
+    /**
      * Map of key to setting.
      */
     private static final Map<String, Setting.AffixSetting<?>> KEY_SETTING_MAP = Map.of(
@@ -189,6 +228,13 @@ public class EhcacheDiskCacheSettings {
         DISK_LISTENER_MODE_SYNC_KEY,
         DISK_CACHE_LISTENER_MODE_SYNC_SETTING
     );
+
+    // DISK_CACHE_MAX_DELAY_FOR_BATCH_KEY,
+    // DISK_CACHE_MAX_DELAY_FOR_BATCH,
+    // DISK_CACHE_BATCH_SIZE_KEY,
+    // DISK_CACHE_BATCH_SIZE,
+    // DISK_CACHE_MAX_QUEUE_SIZE_FOR_WRITE_BEHIND_KEY,
+    // DISK_CACHE_MAX_QUEUE_SIZE_FOR_WRITE_BEHIND
 
     /**
      * Map to store desired settings for a cache type.
