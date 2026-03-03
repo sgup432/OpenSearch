@@ -47,7 +47,6 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.common.settings.SettingsException;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.core.common.unit.ByteSizeUnit;
-import org.opensearch.indices.IndicesQueryCache;
 import org.opensearch.indices.recovery.RecoverySettings;
 import org.opensearch.test.OpenSearchIntegTestCase;
 import org.junit.After;
@@ -79,14 +78,6 @@ public class ClusterSettingsIT extends OpenSearchIntegTestCase {
                 .setPersistentSettings(Settings.builder().putNull("*"))
                 .setTransientSettings(Settings.builder().putNull("*"))
         );
-    }
-
-    @Override
-    protected Settings nodeSettings(int nodeOrdinal) {
-        return Settings.builder()
-            .put(super.nodeSettings(nodeOrdinal))
-            .put(IndicesQueryCache.INDICES_QUERIES_CACHE_ALL_SEGMENTS_SETTING.getKey(), false)
-            .build();
     }
 
     public void testClusterNonExistingSettingsUpdate() {
