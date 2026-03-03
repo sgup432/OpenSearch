@@ -594,4 +594,34 @@ public class ClusterSettingsIT extends OpenSearchIntegTestCase {
         }
     }
 
+    public void testFieldDataCacheSettingBloatWithRolloverAndWriteBlock() {
+        // Create initial index with alias
+        assertAcked(prepareCreate("logs-000001").addAlias(new org.opensearch.action.admin.indices.alias.Alias("logs-write")));
+
+        // Rollover 50 times
+        for (int i = 0; i < 50; i++) {
+            client().admin().indices().prepareRolloverIndex("logs-write").get();
+
+            // After rollover, set write block on old index (common practice)
+            String oldIndex = String.format("logs-%06d", i + 1);
+            client().admin().indices().prepareUpdateSettings(oldIndex)
+                .setSettings(Settings.builder().put(IndexMetadata.SETTING_BLOCKS_WRITE, true))
+                .get();
+        }
+
+        ClusterSettings clusterSettings = clusterService().getClusterSettings();
+        List<AbstractScopedSettings.SettingUpdater<?>> settingUpdaters = clusterSettings.getSettingUpdaters();
+        int count = 0;
+        Pattern p = Pattern.compile("\"key\"\\s*:\\s*\"([^\"]+)\"");
+        for (AbstractScopedSettings.SettingUpdater<?> updater : settingUpdaters) {
+            Matcher m = p.matcher(updater.toString());
+            if (m.find() && "indices.fielddata.cache.size".equals(m.group(1))) {
+                count++;
+            }
+        }
+
+        logger.info("Setting 'indices.fielddata.cache.size' registered {} times after rollover with write blocks", count);
+        assertTrue("Expected bloat after rollover with write blocks, found only " + count, count > 1);
+    }
+
 }
