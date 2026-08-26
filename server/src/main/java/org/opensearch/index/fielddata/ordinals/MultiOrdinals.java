@@ -87,12 +87,20 @@ public class MultiOrdinals extends Ordinals {
     private final PackedLongValues ords;
 
     public MultiOrdinals(OrdinalsBuilder builder, float acceptableOverheadRatio) {
+        this(builder, acceptableOverheadRatio, () -> {});
+    }
+
+    /** As above, but polls {@code cancellationCheck} during the repack (which reads the in-heap builder, not the reader). */
+    public MultiOrdinals(OrdinalsBuilder builder, float acceptableOverheadRatio, Runnable cancellationCheck) {
         multiValued = builder.getNumMultiValuesDocs() > 0;
         valueCount = builder.getValueCount();
         PackedLongValues.Builder endOffsetsBuilder = PackedLongValues.monotonicBuilder(OFFSETS_PAGE_SIZE, acceptableOverheadRatio);
         PackedLongValues.Builder ordsBuilder = PackedLongValues.packedBuilder(OFFSETS_PAGE_SIZE, acceptableOverheadRatio);
         long lastEndOffset = 0;
         for (int i = 0; i < builder.maxDoc(); ++i) {
+            if ((i & 0x3FF) == 0) {  // poll for cancellation ~every 1024 docs
+                cancellationCheck.run();
+            }
             final LongsRef docOrds = builder.docOrds(i);
             final long endOffset = lastEndOffset + docOrds.length;
             endOffsetsBuilder.add(endOffset);

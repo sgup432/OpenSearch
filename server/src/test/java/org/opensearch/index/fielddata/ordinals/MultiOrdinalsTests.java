@@ -35,6 +35,7 @@ import org.apache.lucene.index.DocValues;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedSetDocValues;
 import org.apache.lucene.util.packed.PackedInts;
+import org.opensearch.core.tasks.TaskCancelledException;
 import org.opensearch.search.MultiValueMode;
 import org.opensearch.test.OpenSearchTestCase;
 
@@ -53,6 +54,60 @@ public class MultiOrdinalsTests extends OpenSearchTestCase {
 
     protected Ordinals creationMultiOrdinals(OrdinalsBuilder builder) {
         return builder.build();
+    }
+
+    /**
+     * The {@link MultiOrdinals} repack loop reads the in-heap {@link OrdinalsBuilder} (not the Lucene reader),
+     * so it is not covered by the {@code ExitableDirectoryReader} cancellation checks added in PR #21318.
+     * Verifies that {@link OrdinalsBuilder#build(Runnable)} polls the cancellation check while repacking, so a
+     * cancelled search aborts the build instead of running to completion.
+     */
+    public void testBuildWithCancellation() {
+        int numDocs = 5000; // large enough to iterate the repack loop past the first sampling checkpoint
+        int numOrdinals = 10;
+        OrdinalsBuilder builder = new OrdinalsBuilder(numDocs);
+        // Give every doc every ordinal so the field is multi-valued and MultiOrdinals (not SinglePackedOrdinals) is built.
+        for (int ord = 0; ord < numOrdinals; ord++) {
+            builder.nextOrdinal();
+            for (int doc = 0; doc < numDocs; doc++) {
+                builder.addDoc(doc);
+            }
+        }
+        assertThat(builder.getNumMultiValuesDocs(), equalTo(numDocs));
+
+        // A no-op cancellation check builds successfully.
+        Ordinals ordinals = builder.build(() -> {});
+        assertNotNull(ordinals);
+        assertThat(ordinals.ordinals().getValueCount(), equalTo((long) numOrdinals));
+
+        // A check that throws causes the repack to abort with TaskCancelledException.
+        expectThrows(TaskCancelledException.class, () -> builder.build(() -> { throw new TaskCancelledException("cancelled"); }));
+
+        // The default build() (no cancellation check) is unaffected.
+        assertNotNull(builder.build());
+    }
+
+    /**
+     * The cancellation check must fire during the repack loop, not only on the first document, so a search
+     * cancelled partway through a large repack still aborts.
+     */
+    public void testBuildWithDelayedCancellation() {
+        int numDocs = 20000;
+        OrdinalsBuilder builder = new OrdinalsBuilder(numDocs);
+        for (int ord = 0; ord < 5; ord++) {
+            builder.nextOrdinal();
+            for (int doc = 0; doc < numDocs; doc++) {
+                builder.addDoc(doc);
+            }
+        }
+        final int[] calls = new int[1];
+        // Throw only after several sampling checkpoints have passed.
+        expectThrows(TaskCancelledException.class, () -> builder.build(() -> {
+            if (calls[0]++ >= 3) {
+                throw new TaskCancelledException("cancelled after progress");
+            }
+        }));
+        assertThat("cancellation check should have been polled multiple times", calls[0] >= 3, equalTo(true));
     }
 
     public void testRandomValues() throws IOException {

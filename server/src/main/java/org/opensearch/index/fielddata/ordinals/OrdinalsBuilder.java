@@ -370,6 +370,11 @@ public final class OrdinalsBuilder implements Closeable {
      * Builds an {@link Ordinals} instance from the builders current state.
      */
     public Ordinals build() {
+        return build(() -> {});
+    }
+
+    /** As {@link #build()}, but polls {@code cancellationCheck} during the {@link MultiOrdinals} repack. */
+    public Ordinals build(Runnable cancellationCheck) {
         final float acceptableOverheadRatio = PackedInts.DEFAULT;
         if (numMultiValuedDocs > 0
             || MultiOrdinals.significantlySmallerThanSinglePackedOrdinals(
@@ -379,8 +384,9 @@ public final class OrdinalsBuilder implements Closeable {
                 acceptableOverheadRatio
             )) {
             // MultiOrdinals can be smaller than SinglePackedOrdinals for sparse fields
-            return new MultiOrdinals(this, acceptableOverheadRatio);
+            return new MultiOrdinals(this, acceptableOverheadRatio, cancellationCheck);
         } else {
+            // SinglePackedOrdinals is a single bulk copy (no per-doc loop), so no check needed.
             return new SinglePackedOrdinals(this, acceptableOverheadRatio);
         }
     }

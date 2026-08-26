@@ -62,6 +62,7 @@ import org.opensearch.search.aggregations.DefaultAggregationProcessor;
 import org.opensearch.search.aggregations.GlobalAggCollectorManager;
 import org.opensearch.search.internal.ContextIndexSearcher;
 import org.opensearch.search.internal.ScrollContext;
+import org.opensearch.search.internal.SearchCancellationContext;
 import org.opensearch.search.internal.SearchContext;
 import org.opensearch.search.profile.ProfileShardResult;
 import org.opensearch.search.profile.SearchProfileShardResults;
@@ -149,24 +150,41 @@ public class QueryPhase {
         }
 
         final AggregationProcessor aggregationProcessor = queryPhaseSearcher.aggregationProcessor(searchContext);
-        // Pre-process aggregations as late as possible. In the case of a DFS_Q_T_F
-        // request, preProcess is called on the DFS phase phase, this is why we pre-process them
-        // here to make sure it happens during the QUERY phase
-        aggregationProcessor.preProcess(searchContext);
-        boolean rescore = executeInternal(searchContext, queryPhaseSearcher);
-
-        if (rescore) { // only if we do a regular search
-            rescoreProcessor.process(searchContext);
+        // Bind the cancellation check for the whole query phase, incl. aggregation preProcess where the in-heap
+        // field data / global-ordinals build runs (not covered by ExitableDirectoryReader). Cleared in the finally.
+        final boolean bindCancellation = searchContext.lowLevelCancellation();
+        if (bindCancellation) {
+            SearchCancellationContext.set(() -> {
+                SearchShardTask task = searchContext.getTask();
+                if (task != null && task.isCancelled()) {
+                    throw new TaskCancelledException("cancelled task with reason: " + task.getReasonCancelled());
+                }
+            });
         }
-        suggestProcessor.process(searchContext);
-        aggregationProcessor.postProcess(searchContext);
+        try {
+            // Pre-process aggregations as late as possible. In the case of a DFS_Q_T_F
+            // request, preProcess is called on the DFS phase phase, this is why we pre-process them
+            // here to make sure it happens during the QUERY phase
+            aggregationProcessor.preProcess(searchContext);
+            boolean rescore = executeInternal(searchContext, queryPhaseSearcher);
 
-        if (searchContext.getProfilers() != null) {
-            ProfileShardResult shardResults = SearchProfileShardResults.buildShardResults(
-                searchContext.getProfilers(),
-                searchContext.request()
-            );
-            searchContext.queryResult().profileResults(shardResults);
+            if (rescore) { // only if we do a regular search
+                rescoreProcessor.process(searchContext);
+            }
+            suggestProcessor.process(searchContext);
+            aggregationProcessor.postProcess(searchContext);
+
+            if (searchContext.getProfilers() != null) {
+                ProfileShardResult shardResults = SearchProfileShardResults.buildShardResults(
+                    searchContext.getProfilers(),
+                    searchContext.request()
+                );
+                searchContext.queryResult().profileResults(shardResults);
+            }
+        } finally {
+            if (bindCancellation) {
+                SearchCancellationContext.clear();
+            }
         }
     }
 

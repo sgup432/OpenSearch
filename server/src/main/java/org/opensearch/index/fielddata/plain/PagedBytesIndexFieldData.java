@@ -59,6 +59,7 @@ import org.opensearch.index.fielddata.ordinals.OrdinalsBuilder;
 import org.opensearch.search.DocValueFormat;
 import org.opensearch.search.MultiValueMode;
 import org.opensearch.search.aggregations.support.ValuesSourceType;
+import org.opensearch.search.internal.SearchCancellationContext;
 import org.opensearch.search.sort.BucketedSort;
 import org.opensearch.search.sort.SortOrder;
 
@@ -170,17 +171,25 @@ public class PagedBytesIndexFieldData extends AbstractIndexOrdinalsFieldData {
 
         try (OrdinalsBuilder builder = new OrdinalsBuilder(reader.maxDoc(), acceptableTransientOverheadRatio)) {
             PostingsEnum docsEnum = null;
+            int docCancelCheck = 0;
+            // The field data build reads the unwrapped reader (via the cache), so ExitableDirectoryReader's
+            // checks don't fire here; poll the query-phase cancellation check instead.
             for (BytesRef term = termsEnum.next(); term != null; term = termsEnum.next()) {
+                SearchCancellationContext.checkCancelled();
                 final long termOrd = builder.nextOrdinal();
                 assert termOrd == termOrdToBytesOffset.size();
                 termOrdToBytesOffset.add(bytes.copyUsingLengthPrefix(term));
                 docsEnum = termsEnum.postings(docsEnum, PostingsEnum.NONE);
                 for (int docId = docsEnum.nextDoc(); docId != DocIdSetIterator.NO_MORE_DOCS; docId = docsEnum.nextDoc()) {
+                    if ((++docCancelCheck & 0x3FFF) == 0) {
+                        SearchCancellationContext.checkCancelled();
+                    }
                     builder.addDoc(docId);
                 }
             }
             PagedBytes.Reader bytesReader = bytes.freeze(true);
-            final Ordinals ordinals = builder.build();
+            // pass the cancellation check into the MultiOrdinals repack (no-op if unbound)
+            final Ordinals ordinals = builder.build(SearchCancellationContext::checkCancelled);
 
             data = new PagedBytesLeafFieldData(bytesReader, termOrdToBytesOffset.build(), ordinals);
             success = true;
